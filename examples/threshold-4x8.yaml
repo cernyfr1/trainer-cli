@@ -1,0 +1,12 @@
+name: 4x8 threshold
+description: Classic sweet-spot/threshold builder
+# ftp: 250          # optional; --ftp or config ftp used otherwise
+steps:
+  - warmup:   { duration: 10m, from: 50%, to: 75% }
+  - steady:   { duration: 3m, power: 60% }
+  - repeat: 4
+    steps:
+      - work:     { duration: 8m, power: 100%, label: "threshold" }
+      - recovery: { duration: 4m, power: 55% }
+  - free:     { duration: 3m, label: "spin easy (sim mode)" }
+  - cooldown: { duration: 8m, from: 65%, to: 45% }

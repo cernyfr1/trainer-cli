@@ -1,0 +1,45 @@
+{
+  "name": "trainer-cli",
+  "version": "0.1.0",
+  "description": "Terminal controller for BLE FTMS smart trainers: route sim, structured workouts, FIT + Strava",
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "build": "tsc -p .",
+    "test": "vitest run",
+    "typecheck": "tsc -p . --noEmit"
+  },
+  "keywords": [
+    "ftms",
+    "smart-trainer",
+    "cycling",
+    "strava",
+    "fit"
+  ],
+  "author": "František Černý",
+  "license": "MIT",
+  "dependencies": {
+    "@garmin/fitsdk": "^21.218.0",
+    "commander": "^15.0.0",
+    "fast-xml-parser": "^5.11.2",
+    "ink": "^8.0.0",
+    "react": "^19.3.1",
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.4"
+  },
+  "type": "module",
+  "bin": {
+    "trainer": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "optionalDependencies": {
+    "@abandonware/noble": "^1.9.2-26"
+  }
+}
