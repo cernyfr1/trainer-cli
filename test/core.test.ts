@@ -6,7 +6,9 @@ import { powerForSpeed, steadySpeed } from '../src/physics.js';
 import { parseGpx, RouteCursor } from '../src/route/route.js';
 import { parseDuration, parsePower, parseYamlWorkout, parseZwo, targetAt } from '../src/workout/workout.js';
 import { MockTrainer } from '../src/trainer/mock.js';
-import { Session } from '../src/session.js';
+import { Session, type Snapshot } from '../src/session.js';
+import { ClickEdgeDetector, RIDE_ON, decodeClickMessage, isLockedResponse, parseZwiftAdvert } from '../src/controller/zwiftCodec.js';
+import { MockClick } from '../src/controller/mock.js';
 import { DEFAULTS } from '../src/config.js';
 
 const hex = (b: Uint8Array) => Buffer.from(b).toString('hex');
@@ -124,4 +126,99 @@ describe('session (mock, accelerated)', () => {
     const work = messages.lapMesgs[1];
     expect(work.avgPower).toBeGreaterThan(200);
   }, 20_000);
+});
+
+describe('Zwift Click codec', () => {
+  const b = (h: string) => Uint8Array.from(Buffer.from(h.replace(/ /g, ''), 'hex'));
+
+  it('decodes packets captured from a real Click v1 (fw 1.1.0)', () => {
+    expect(decodeClickMessage(b('37 08 00 10 01'))).toEqual({ plus: true, minus: false });
+    expect(decodeClickMessage(b('37 08 01 10 00'))).toEqual({ plus: false, minus: true });
+    expect(decodeClickMessage(b('37 08 01 10 01'))).toEqual({ plus: false, minus: false });
+    expect(decodeClickMessage(b('19 10 0c'))).toBeUndefined(); // battery
+    expect(isLockedResponse(b('52 69 64 65 4f 6e'))).toBe(false); // handshake echo
+  });
+
+  it('decodes Click v1 (0x37) button states — 0 = pressed', () => {
+    expect(decodeClickMessage(b('37 08 00 10 01'))).toEqual({ plus: true, minus: false });
+    expect(decodeClickMessage(b('37 08 01 10 00'))).toEqual({ plus: false, minus: true });
+    expect(decodeClickMessage(b('37 08 01 10 01'))).toEqual({ plus: false, minus: false });
+  });
+
+  it('decodes Click v2 (0x23) bitmask — cleared bit = pressed, Z is a fallback minus', () => {
+    expect(decodeClickMessage(b('23 08 ff df ff ff 0f'))).toEqual({ plus: true, minus: false });   // ~0x1000
+    expect(decodeClickMessage(b('23 08 ff fd ff ff 0f'))).toEqual({ plus: false, minus: true });   // ~0x0100
+    expect(decodeClickMessage(b('23 08 ff fe ff ff 0f'))).toEqual({ plus: false, minus: true });   // ~0x0080 (Z)
+    expect(decodeClickMessage(b('23 08 ff ff ff ff 0f'))).toEqual({ plus: false, minus: false });  // released
+  });
+
+  it('ignores other message types and garbage', () => {
+    expect(decodeClickMessage(b('15 08 01'))).toBeUndefined();
+    expect(decodeClickMessage(b('19 08 64'))).toBeUndefined();
+    expect(decodeClickMessage(b('23 08 ff'))).toBeUndefined(); // truncated varint
+    expect(decodeClickMessage(new Uint8Array())).toBeUndefined();
+  });
+
+  it('identifies Clicks from manufacturer data and detects a locked v2 puck', () => {
+    expect(parseZwiftAdvert(b('4a 09 09'))).toBe('click-v1');
+    expect(parseZwiftAdvert(b('4a 09 0a 01'))).toBe('click-v2-right');
+    expect(parseZwiftAdvert(b('4a 09 0b'))).toBe('click-v2-left');
+    expect(parseZwiftAdvert(b('4a 09 02'))).toBeUndefined(); // Zwift Play
+    expect(parseZwiftAdvert(b('4c 00 09'))).toBeUndefined(); // not Zwift
+    expect(parseZwiftAdvert(undefined)).toBeUndefined();
+    expect(isLockedResponse(b('ff 05 00 ea 05'))).toBe(true);
+    expect(isLockedResponse(RIDE_ON)).toBe(false);
+  });
+
+  it('emits one adjust per released → pressed edge', () => {
+    const e = new ClickEdgeDetector();
+    expect(e.update({ plus: true, minus: false })).toEqual([1]);
+    expect(e.update({ plus: true, minus: false })).toEqual([]); // repeated frame
+    expect(e.update({ plus: false, minus: false })).toEqual([]);
+    expect(e.update({ plus: false, minus: true })).toEqual([-1]);
+    expect(e.update({ plus: true, minus: false })).toEqual([1]);
+  });
+});
+
+describe('session + handlebar controller', () => {
+  const lastSnap = (s: Session) => {
+    let snap: Snapshot | undefined;
+    s.on('snapshot', (x: Snapshot) => { snap = x; });
+    return () => snap!;
+  };
+
+  it('Click presses act like +/-: difficulty in route, ERG offset in workout', async () => {
+    const route = parseGpx(await readFile('examples/climb-loop.gpx', 'utf8'));
+    const r = new Session(new MockTrainer(), { kind: 'route', route }, DEFAULTS);
+    const rs = lastSnap(r);
+    const c1 = new MockClick();
+    r.attachController(c1);
+    c1.press(-1);
+    expect(rs().difficulty).toBeCloseTo(0.9);
+
+    const w = parseYamlWorkout('name: t\nsteps:\n  - work: { duration: 60s, power: 100% }\n');
+    const ws = new Session(new MockTrainer(), { kind: 'workout', workout: w, ftp: 200 }, DEFAULTS);
+    const wsnap = lastSnap(ws);
+    const c2 = new MockClick();
+    ws.attachController(c2);
+    c2.press(1);
+    expect(wsnap().ergOffsetW).toBe(5);
+  });
+
+  it('a dropped Click shows as disconnected and the ride continues', async () => {
+    const route = parseGpx(await readFile('examples/climb-loop.gpx', 'utf8'));
+    const s = new Session(new MockTrainer(), { kind: 'route', route }, DEFAULTS);
+    const snap = lastSnap(s);
+    const c = new MockClick();
+    s.attachController(c);
+    expect(snap().controllers).toEqual([{ name: 'MockClick', connected: false }]); // attached before connect
+    await c.connect();
+    expect(snap().controllers).toEqual([{ name: 'MockClick', connected: true }]);
+    expect(snap().log.some((l) => l.includes('mock click connected'))).toBe(true);
+    await c.disconnect();
+    expect(snap().controllers).toEqual([{ name: 'MockClick', connected: false }]);
+    expect(snap().log.some((l) => l.includes('MockClick disconnected'))).toBe(true);
+    s.adjust(1); // keyboard still works
+    expect(snap().difficulty).toBeCloseTo(1.1);
+  });
 });

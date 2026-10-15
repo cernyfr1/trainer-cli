@@ -56,6 +56,7 @@ no BLE dependency**, so the whole app runs and is testable with `--mock`.
 | `src/session.ts` | Session engine: tick loop, mode strategies (route / workout / free), pause, laps. |
 | `src/recorder.ts` | Per-second samples → FIT activity (file_id, events, records, laps, session, activity). |
 | `src/strava.ts` | OAuth (loopback redirect), token store, upload + poll. |
+| `src/controller/*.ts` | Handlebar remotes: Zwift Click codec (pure), BLE client, mock. Buttons → `Session.adjust(±1)`. |
 | `src/ui/*.tsx` | Ink components: header, big numbers, grade/elevation sparkline, workout bar. |
 | `src/cli.ts` | Command wiring. |
 
@@ -98,6 +99,22 @@ HR, MET, elapsed, remaining.
   (default −10 … +15 %, configurable) and sends a `difficulty` scale factor
   (default 100 %) the user can turn down from the TUI.
 - Spin-down calibration isn't exposed via FTMS on this unit; use the Decathlon app.
+
+## Zwift Click protocol notes
+
+Reverse-engineered (see the BikeControl project); no official spec.
+
+- Identified by manufacturer data: company `0x094A`, then device type `0x09` (Click),
+  `0x0A` / `0x0B` (Click v2 right / left). Scan is unfiltered — the custom service
+  isn't reliably advertised.
+- Service `00000001-19CA-4651-86E5-FA29DCDD09D1` (or `0xFC82` on newer firmware):
+  `…0002` Async (notify, buttons), `…0003` SyncRx (write), `…0004` SyncTx (indicate).
+- Handshake: write ASCII `RideOn` to SyncRx — no encryption on the Click. A locked v2
+  puck replies `0xFF …` instead of echoing it.
+- Button messages: type byte + protobuf. `0x37` (v1): field 1 plus, field 2 minus,
+  0 = pressed. `0x23` (v2): field 1 bitmask, cleared bit = pressed; `0x1000` → +,
+  `0x0100` or `0x0080` (Z, right-puck fallback) → −. State repeats, so only
+  released → pressed edges count.
 
 ## Ride simulation (route mode)
 

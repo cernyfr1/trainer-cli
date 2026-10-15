@@ -133,7 +133,10 @@ export function RideView({ session, onExit }: { session: Session; onExit: () => 
     <Box flexDirection="column" width={width + 2} paddingX={1}>
       <Box justifyContent="space-between">
         <Text><Text bold color="magentaBright">trainer-cli</Text><Text dimColor> · </Text><Text bold>{s.mode.toUpperCase()}</Text> {s.title}</Text>
-        <Text>⏱ {fmtTime(s.elapsedS)}   {s.connected ? <Text color="green">● {s.trainerName}</Text> : <Text color="red">✖ {s.trainerName} disconnected</Text>}</Text>
+        <Text>⏱ {fmtTime(s.elapsedS)}   {s.connected ? <Text color="green">● {s.trainerName}</Text> : <Text color="red">✖ {s.trainerName} disconnected</Text>}
+          {s.controllers.length > 0 && (s.controllers.some((c) => c.connected)
+            ? <Text color="green">  ● Click</Text>
+            : <Text dimColor>  ○ Click</Text>)}</Text>
       </Box>
       <Text dimColor>{line}</Text>
       <Box>

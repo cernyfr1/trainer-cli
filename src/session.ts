@@ -6,6 +6,7 @@ import { RouteCursor, type Route } from './route/route.js';
 import type { Trainer } from './trainer/types.js';
 import { targetAt, type Workout, type WorkoutTarget } from './workout/workout.js';
 import type { Config } from './config.js';
+import type { Controller } from './controller/types.js';
 
 export type Mode =
   | { kind: 'route'; route: Route }
@@ -40,6 +41,7 @@ export interface Snapshot {
   targetW?: number | null;
   ergOffsetW: number;
   workout?: { name: string; totalS: number; elapsedS: number; target: WorkoutTarget; steps: { label: string; durationS: number; kind: string }[] };
+  controllers: { name: string; connected: boolean }[];
   lap: number;
   log: string[];
 }
@@ -80,6 +82,7 @@ export class Session extends EventEmitter {
   private profile?: number[];
   private logLines: string[] = [];
   private connected = true;
+  private controllers: { name: string; connected: boolean }[] = [];
   private freeErg?: number;
   private freeGrade?: number;
   private model: RiderModel;
@@ -142,6 +145,17 @@ export class Session extends EventEmitter {
       this.freeGrade = clamp((this.freeGrade ?? 0) + dir * 0.5, this.cfg.minGrade, this.cfg.maxGrade);
       this.lastSentGrade = undefined;
     }
+    this.emitSnapshot();
+  }
+
+  /** Handlebar remote (Zwift Click): its buttons act like the +/- keys. Attach before connect() so its logs show. */
+  attachController(c: Controller) {
+    const state = { name: c.name, connected: false };
+    this.controllers = [...this.controllers, state];
+    c.on('adjust', (dir: 1 | -1) => this.adjust(dir));
+    c.on('log', (l: string) => this.log(l));
+    c.on('connected', () => { state.connected = true; this.emitSnapshot(); });
+    c.on('disconnect', () => { state.connected = false; this.log(`${c.name} disconnected`); this.emitSnapshot(); });
     this.emitSnapshot();
   }
 
@@ -291,6 +305,7 @@ export class Session extends EventEmitter {
       avgPowerW: Math.round(avg),
       difficulty: this.difficulty,
       ergOffsetW: this.ergOffset,
+      controllers: this.controllers.map((c) => ({ ...c })),
       lap: this.recorder.lapCount,
       log: this.logLines,
     };

@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import {
   FTMS, OpCode, cmd, decodeControlResponse, decodeFeatures, decodeIndoorBikeData, type FtmsFeatures,
 } from '../ftms/codec.js';
+import { CLICK_LABEL, parseZwiftAdvert, type ClickKind } from '../controller/zwiftCodec.js';
 import type { DiscoveredTrainer, SimParams, Trainer } from './types.js';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -24,7 +25,7 @@ export async function loadNoble(): Promise<Noble> {
   return noblePromise;
 }
 
-async function poweredOn(noble: Noble): Promise<void> {
+export async function poweredOn(noble: Noble): Promise<void> {
   if (noble.state === 'poweredOn' || noble._state === 'poweredOn') return;
   await new Promise<void>((resolve, reject) => {
     const to = setTimeout(() => reject(new Error(`Bluetooth adapter not ready (state: ${noble.state})`)), 10_000);
@@ -32,22 +33,32 @@ async function poweredOn(noble: Noble): Promise<void> {
   });
 }
 
-const norm = (uuid: string) => uuid.replace(/-/g, '').toLowerCase().replace(/^0000(....)00001000800000805f9b34fb$/, '$1');
+export const norm = (uuid: string) => uuid.replace(/-/g, '').toLowerCase().replace(/^0000(....)00001000800000805f9b34fb$/, '$1');
 
-/** Scan for FTMS trainers for `seconds`. */
-export async function scanTrainers(seconds = 8, onFound?: (t: DiscoveredTrainer) => void): Promise<Map<string, { info: DiscoveredTrainer; p: Peripheral }>> {
+/** Scan for FTMS trainers for `seconds`; Zwift Click pucks seen meanwhile go to `onClick`. */
+export async function scanTrainers(
+  seconds = 8, onFound?: (t: DiscoveredTrainer) => void, onClick?: (c: DiscoveredTrainer & { kind: ClickKind }) => void,
+): Promise<Map<string, { info: DiscoveredTrainer; p: Peripheral }>> {
   const noble = await loadNoble();
   await poweredOn(noble);
   const found = new Map<string, { info: DiscoveredTrainer; p: Peripheral }>();
+  const clicks = new Set<string>();
   const onDiscover = (p: Peripheral) => {
+    const name: string = p.advertisement?.localName ?? '(unnamed)';
+    const kind = parseZwiftAdvert(p.advertisement?.manufacturerData);
+    if (kind && !clicks.has(p.id)) {
+      clicks.add(p.id);
+      onClick?.({ id: p.id, name: CLICK_LABEL[kind], rssi: p.rssi, kind });
+    }
     const uuids: string[] = (p.advertisement?.serviceUuids ?? []).map(norm);
     if (!uuids.includes(FTMS.service) || found.has(p.id)) return;
-    const info = { id: p.id, name: p.advertisement?.localName ?? '(unnamed)', rssi: p.rssi };
+    const info = { id: p.id, name, rssi: p.rssi };
     found.set(p.id, { info, p });
     onFound?.(info);
   };
   noble.on('discover', onDiscover);
-  await noble.startScanningAsync([FTMS.service], false);
+  // unfiltered: Clicks don't reliably advertise their service UUID
+  await noble.startScanningAsync([], false);
   await new Promise((r) => setTimeout(r, seconds * 1000));
   await noble.stopScanningAsync();
   noble.removeListener('discover', onDiscover);

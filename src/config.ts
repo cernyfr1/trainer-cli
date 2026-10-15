@@ -13,6 +13,7 @@ export interface Config {
   minGrade: number;
   difficulty: number;
   trainerName?: string;
+  clickName?: string;
   stravaClientId?: string;
   stravaClientSecret?: string;
 }
