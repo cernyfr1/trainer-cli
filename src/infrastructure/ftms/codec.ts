@@ -2,6 +2,8 @@
  * Fitness Machine Service (FTMS, Bluetooth SIG 0x1826) codec.
  * Pure functions — no BLE dependency — so they can be unit-tested byte-exact.
  */
+import { clamp } from '../../domain/math.js';
+import type { TrainerData, TrainerFeatures } from '../../domain/trainer-data.js';
 
 export const FTMS = {
   service: '1826',
@@ -32,30 +34,12 @@ export const ResultCode: Record<number, string> = {
   0x05: 'control not permitted',
 };
 
-export interface IndoorBikeData {
-  speedKmh?: number;
-  avgSpeedKmh?: number;
-  cadenceRpm?: number;
-  avgCadenceRpm?: number;
-  totalDistanceM?: number;
-  resistanceLevel?: number;
-  powerW?: number;
-  avgPowerW?: number;
-  totalEnergyKcal?: number;
-  energyPerHour?: number;
-  energyPerMinute?: number;
-  heartRateBpm?: number;
-  met?: number;
-  elapsedS?: number;
-  remainingS?: number;
-}
-
 /** Decode an Indoor Bike Data (0x2AD2) notification. */
-export function decodeIndoorBikeData(buf: Uint8Array): IndoorBikeData {
+export function decodeIndoorBikeData(buf: Uint8Array): TrainerData {
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const flags = dv.getUint16(0, true);
   let o = 2;
-  const out: IndoorBikeData = {};
+  const out: TrainerData = {};
   const has = (bit: number) => (flags & (1 << bit)) !== 0;
 
   // bit 0 "More Data" is inverted: 0 => instantaneous speed present
@@ -81,7 +65,7 @@ export function decodeIndoorBikeData(buf: Uint8Array): IndoorBikeData {
 }
 
 /** Inverse of decodeIndoorBikeData — used by the mock trainer and tests. */
-export function encodeIndoorBikeData(d: IndoorBikeData): Uint8Array {
+export function encodeIndoorBikeData(d: TrainerData): Uint8Array {
   const bytes: number[] = [];
   let flags = 0;
   const u16 = (v: number) => { const x = Math.round(v) & 0xffff; bytes.push(x & 0xff, x >> 8); };
@@ -137,7 +121,7 @@ export function decodeControlResponse(buf: Uint8Array): ControlResponse | undefi
 }
 
 /** Decode the 0x2ACC feature characteristic (two uint32 bitfields). */
-export function decodeFeatures(buf: Uint8Array) {
+export function decodeFeatures(buf: Uint8Array): TrainerFeatures {
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const machine = dv.getUint32(0, true);
   const target = dv.getUint32(4, true);
@@ -153,6 +137,3 @@ export function decodeFeatures(buf: Uint8Array) {
     spinDown: !!(target & (1 << 12)),
   };
 }
-export type FtmsFeatures = ReturnType<typeof decodeFeatures>;
-
-export function clamp(v: number, lo: number, hi: number) { return Math.min(hi, Math.max(lo, v)); }

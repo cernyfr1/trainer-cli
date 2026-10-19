@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Terminal controller for BLE FTMS smart trainers: route sim, structured workouts, FIT + Strava",
   "scripts": {
-    "dev": "tsx src/cli.ts",
+    "dev": "tsx src/presentation/cli.ts",
     "build": "tsc -p .",
     "test": "vitest run",
     "typecheck": "tsc -p . --noEmit"
@@ -34,7 +34,7 @@
   },
   "type": "module",
   "bin": {
-    "trainer": "dist/cli.js"
+    "trainer": "dist/presentation/cli.js"
   },
   "engines": {
     "node": ">=22"

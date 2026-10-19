@@ -2,7 +2,8 @@ import { createServer } from 'node:http';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { exec } from 'node:child_process';
-import { appDir } from './config.js';
+import type { ActivityUploader } from '../application/ports.js';
+import { appDir } from './config-file.js';
 
 const API = 'https://www.strava.com';
 const REDIRECT_PORT = 8723;
@@ -115,4 +116,12 @@ export async function stravaUpload(
   if (up.error) throw new Error(`Strava rejected the file: ${up.error}`);
   if (!up.activity_id) throw new Error(`Strava is still processing upload ${up.id} — check your feed in a minute`);
   return { activityId: up.activity_id, url: `https://www.strava.com/activities/${up.activity_id}` };
+}
+
+export class StravaUploader implements ActivityUploader {
+  async isConnected() { return !!(await readAuth())?.tokens; }
+
+  upload(file: string, opts: { name?: string; indoor: boolean }) {
+    return stravaUpload(file, { name: opts.name, trainer: opts.indoor });
+  }
 }

@@ -1,17 +1,19 @@
 import { EventEmitter } from 'node:events';
-import { decodeIndoorBikeData, encodeIndoorBikeData, type FtmsFeatures } from '../ftms/codec.js';
-import { stepSpeed, type RiderModel } from '../physics.js';
-import type { SimParams, Trainer } from './types.js';
+import type { Clock, Trainer } from '../../application/ports.js';
+import { stepSpeed, type RiderModel } from '../../domain/physics.js';
+import type { SimParams, TrainerFeatures } from '../../domain/trainer-data.js';
+import { decodeIndoorBikeData, encodeIndoorBikeData } from '../ftms/codec.js';
 
 /**
  * Fake FTMS trainer with a virtual rider attached.
  * - ERG mode: rider holds target ±noise.
  * - Sim mode: rider pedals a "natural" power that rises on climbs, eases on descents.
  * Data goes through the real FTMS encoder/decoder so the codec is exercised end-to-end.
+ * Runs off the given clock: connect before the session starts so data is fresh on each tick.
  */
 export class MockTrainer extends EventEmitter implements Trainer {
   readonly name = 'MockTrainer';
-  readonly features: FtmsFeatures = {
+  readonly features: TrainerFeatures = {
     cadence: true, totalDistance: true, resistanceLevel: false, heartRate: true, power: true,
     targetResistance: false, targetPower: true, indoorBikeSimulation: true, spinDown: false,
   };
@@ -24,17 +26,25 @@ export class MockTrainer extends EventEmitter implements Trainer {
   private power = 0;
   private hr = 95;
   private t = 0;
+  private cancelTick?: () => void;
 
-  constructor(private basePowerW = 200, private model: RiderModel = { massKg: 84, cda: 0.32, crr: 0.004 }) {
+  constructor(private clock: Clock, private basePowerW = 200, private model: RiderModel = { massKg: 84, cda: 0.32, crr: 0.004 }) {
     super();
   }
 
-  async connect() { this.emit('log', 'mock trainer connected'); }
-  async disconnect() { this.emit('disconnect'); }
+  async connect() {
+    this.cancelTick ??= this.clock.every(1, (dt) => this.tick(dt));
+    this.emit('log', 'mock trainer connected');
+  }
+  async disconnect() {
+    this.cancelTick?.();
+    this.cancelTick = undefined;
+    this.emit('disconnect');
+  }
   async setErgPower(w: number) { this.mode = 'erg'; this.ergW = w; }
   async setSimulation(p: SimParams) { this.mode = 'sim'; this.grade = p.gradePct; }
 
-  tick(dt: number) {
+  private tick(dt: number) {
     this.t += dt;
     const noise = () => (Math.random() - 0.5) * 2;
     const target = this.mode === 'erg'

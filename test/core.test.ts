@@ -1,13 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { Decoder, Stream } from '@garmin/fitsdk';
-import { cmd, decodeControlResponse, decodeFeatures, decodeIndoorBikeData, encodeIndoorBikeData } from '../src/ftms/codec.js';
-import { powerForSpeed, steadySpeed } from '../src/physics.js';
-import { parseGpx, RouteCursor } from '../src/route/route.js';
-import { parseDuration, parsePower, parseYamlWorkout, parseZwo, targetAt } from '../src/workout/workout.js';
-import { MockTrainer } from '../src/trainer/mock.js';
-import { Session } from '../src/session.js';
-import { DEFAULTS } from '../src/config.js';
+import { Session } from '../src/application/session.js';
+import { DEFAULTS } from '../src/domain/config.js';
+import { WorkoutMode } from '../src/domain/modes/workout-mode.js';
+import { powerForSpeed, steadySpeed } from '../src/domain/physics.js';
+import { RouteCursor } from '../src/domain/route.js';
+import { parseDuration, parsePower, targetAt } from '../src/domain/workout.js';
+import { SimClock } from '../src/infrastructure/clock.js';
+import { encodeFit } from '../src/infrastructure/fit-encoder.js';
+import { cmd, decodeControlResponse, decodeFeatures, decodeIndoorBikeData, encodeIndoorBikeData } from '../src/infrastructure/ftms/codec.js';
+import { parseGpx } from '../src/infrastructure/route/gpx.js';
+import { MockTrainer } from '../src/infrastructure/trainer/mock.js';
+import { parseYamlWorkout } from '../src/infrastructure/workout/yaml.js';
+import { parseZwo } from '../src/infrastructure/workout/zwo.js';
 
 const hex = (b: Uint8Array) => Buffer.from(b).toString('hex');
 
@@ -108,12 +114,15 @@ describe('workouts', () => {
 describe('session (mock, accelerated)', () => {
   it('rides a workout to completion and writes a valid FIT with one lap per step', async () => {
     const w = parseYamlWorkout(`name: t\nsteps:\n  - warmup: { duration: 60s, from: 50%, to: 70% }\n  - repeat: 2\n    steps:\n      - work: { duration: 30s, power: 120% }\n      - recovery: { duration: 30s, power: 50% }\n`);
-    const trainer = new MockTrainer(180);
-    const s = new Session(trainer, { kind: 'workout', workout: w, ftp: 200 }, DEFAULTS, { speedup: 2000 });
+    const clock = new SimClock(2000);
+    const trainer = new MockTrainer(clock, 180);
+    await trainer.connect();
+    const s = new Session(trainer, new WorkoutMode(w, 200), clock, { crr: DEFAULTS.crr, cw: 0.5 * 1.225 * DEFAULTS.cda });
     const done = new Promise((r) => s.once('finished', r));
     s.start();
     await done;
-    const fit = s.recorder.toFit(s.now);
+    await trainer.disconnect();
+    const fit = encodeFit(s.recorder.finish(s.now));
     const dec = new Decoder(Stream.fromByteArray(Array.from(fit)));
     expect(dec.checkIntegrity()).toBe(true);
     const { messages, errors } = new Decoder(Stream.fromByteArray(Array.from(fit))).read();

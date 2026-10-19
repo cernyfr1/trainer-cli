@@ -1,19 +1,27 @@
 #!/usr/bin/env node
 import { Command, Option } from 'commander';
-import { mkdir, readdir, stat, writeFile } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import React from 'react';
 import { render } from 'ink';
-import { activitiesDir, configPath, DEFAULTS, loadConfig, saveConfig, type Config } from './config.js';
-import { findTrainer, scanTrainers } from './trainer/ble.js';
-import { MockTrainer } from './trainer/mock.js';
-import type { Trainer } from './trainer/types.js';
-import { loadRoute } from './route/route.js';
-import { loadWorkout } from './workout/workout.js';
-import { Session, type Mode, type Snapshot } from './session.js';
+import type { Clock, Trainer } from '../application/ports.js';
+import { saveRide, uploadRide } from '../application/ride.js';
+import { Session, type Snapshot } from '../application/session.js';
+import { DEFAULTS, type Config } from '../domain/config.js';
+import { FreeMode } from '../domain/modes/free-mode.js';
+import type { RideMode } from '../domain/modes/ride-mode.js';
+import { RouteMode } from '../domain/modes/route-mode.js';
+import { WorkoutMode } from '../domain/modes/workout-mode.js';
+import { FitFileStore } from '../infrastructure/activity-store.js';
+import { RealClock, SimClock } from '../infrastructure/clock.js';
+import { activitiesDir, configPath, loadConfig, saveConfig } from '../infrastructure/config-file.js';
+import { loadRoute } from '../infrastructure/route/loader.js';
+import { StravaUploader, stravaAuth, stravaStatus, stravaUpload } from '../infrastructure/strava.js';
+import { findTrainer, scanTrainers } from '../infrastructure/trainer/ble.js';
+import { MockTrainer } from '../infrastructure/trainer/mock.js';
+import { loadWorkout } from '../infrastructure/workout/loader.js';
 import { RideView, fmtTime } from './ui/RideView.js';
-import { stravaAuth, stravaStatus, stravaUpload } from './strava.js';
 
 interface RideOpts {
   mock?: boolean;
@@ -57,7 +65,10 @@ rideOptions(program.command('ride <route>')
   .action(async (file: string, o: RideOpts) => {
     const route = await loadRoute(file);
     console.log(`${route.name}: ${(route.totalDist / 1000).toFixed(1)} km, ↑ ${Math.round(route.ascent)} m, ${route.points.length} pts`);
-    await runSession({ kind: 'route', route }, o);
+    await runSession((cfg, columns) => new RouteMode(route, {
+      model: { massKg: cfg.riderMassKg + cfg.bikeMassKg, cda: cfg.cda, crr: cfg.crr },
+      minGrade: cfg.minGrade, maxGrade: cfg.maxGrade, difficulty: cfg.difficulty, profileColumns: columns - 10,
+    }), o);
   });
 
 rideOptions(program.command('workout <file>')
@@ -68,7 +79,7 @@ rideOptions(program.command('workout <file>')
     const cfg = await loadConfig();
     const ftp = Number(o.ftp ?? workout.ftp ?? cfg.ftp);
     console.log(`${workout.name}: ${fmtTime(workout.totalS)}, ${workout.steps.length} steps @ FTP ${ftp} W`);
-    await runSession({ kind: 'workout', workout, ftp }, o);
+    await runSession(() => new WorkoutMode(workout, ftp), o);
   });
 
 rideOptions(program.command('free')
@@ -76,7 +87,9 @@ rideOptions(program.command('free')
   .option('--erg <watts>', 'hold this power')
   .option('--grade <pct>', 'simulate this grade', '0'))
   .action(async (o: RideOpts & { erg?: string; grade?: string }) => {
-    await runSession({ kind: 'free', ergW: o.erg ? Number(o.erg) : undefined, gradePct: Number(o.grade) }, o);
+    await runSession((cfg) => new FreeMode({
+      ergW: o.erg ? Number(o.erg) : undefined, gradePct: Number(o.grade), minGrade: cfg.minGrade, maxGrade: cfg.maxGrade,
+    }), o);
   });
 
 const strava = program.command('strava').description('Strava connection');
@@ -131,24 +144,28 @@ program.command('activities')
     for (const f of files) console.log(`${f.padEnd(48)} ${((await stat(join(dir, f))).size / 1024).toFixed(0)} KB`);
   });
 
-async function getTrainer(o: RideOpts, cfg: Config): Promise<Trainer> {
-  if (o.mock) return new MockTrainer(cfg.ftp * 0.8);
+async function getTrainer(o: RideOpts, cfg: Config, clock: Clock): Promise<Trainer> {
+  if (o.mock) return new MockTrainer(clock, cfg.ftp * 0.8);
   const filter = o.trainer ?? cfg.trainerName;
   console.log(`Looking for trainer${filter ? ` "${filter}"` : ''}… (pedal to wake it)`);
   return findTrainer(filter);
 }
 
-async function runSession(mode: Mode, o: RideOpts) {
+/** Builds the ride mode once config and terminal width are known. */
+type ModeFactory = (cfg: Config, columns: number) => RideMode;
+
+async function runSession(makeMode: ModeFactory, o: RideOpts) {
   const cfg = await loadConfig();
   if (o.difficulty) cfg.difficulty = Number(o.difficulty) / 100;
-  const trainer = await getTrainer(o, cfg);
-  await trainer.connect();
   const speedup = Number(o.speedup ?? 1);
+  const clock: Clock = o.mock ? new SimClock(speedup) : new RealClock();
+  const trainer = await getTrainer(o, cfg, clock);
+  await trainer.connect();
   if (!o.mock && speedup !== 1) console.warn('--speedup is ignored with a real trainer');
 
   const tui = o.tui && process.stdout.isTTY && process.stdin.isTTY;
   const cols = Math.max(60, Math.min(120, (process.stdout.columns ?? 80) - 2));
-  const session = new Session(trainer, mode, cfg, { speedup: o.mock ? speedup : 1, profileColumns: cols - 10 });
+  const session = new Session(trainer, makeMode(cfg, cols), clock, { crr: cfg.crr, cw: 0.5 * 1.225 * cfg.cda });
 
   const done = new Promise<void>((resolve) => session.once('finished', () => resolve()));
   let inkApp: ReturnType<typeof render> | undefined;
@@ -173,32 +190,24 @@ async function runSession(mode: Mode, o: RideOpts) {
   if (inkApp) { await new Promise((r) => setTimeout(r, 400)); inkApp.unmount(); }
   await trainer.disconnect().catch(() => undefined);
 
-  const rec = session.recorder;
-  if (!rec.samples.length) { console.log('Nothing recorded.'); process.exit(0); }
-  const now = session.now;
-  const bytes = rec.toFit(now);
-  await mkdir(activitiesDir(), { recursive: true });
-  const stamp = rec.samples[0].time.toISOString().slice(0, 16).replace(/[T:]/g, '-');
-  const slug = rec.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'ride';
-  const file = join(activitiesDir(), `${stamp}-${slug}.fit`);
-  await writeFile(file, bytes);
-  const s = rec.samples;
-  const avgP = Math.round(s.reduce((a, x) => a + (x.powerW ?? 0), 0) / s.length);
-  console.log(`\n✔ ${fmtTime(rec.timerSeconds)} · ${(s[s.length - 1].distanceM / 1000).toFixed(2)} km · avg ${avgP} W`);
-  console.log(`  saved ${file}`);
+  const ride = await saveRide(session, new FitFileStore(activitiesDir()));
+  if (!ride) { console.log('Nothing recorded.'); process.exit(0); }
+  console.log(`\n✔ ${fmtTime(ride.activity.timerS)} · ${(ride.distanceM / 1000).toFixed(2)} km · avg ${ride.avgPowerW} W`);
+  console.log(`  saved ${ride.file}`);
 
+  const uploader = new StravaUploader();
   let upload = o.upload;
-  if (upload === undefined && process.stdin.isTTY && !(await stravaStatus()).startsWith('not')) {
+  if (upload === undefined && process.stdin.isTTY && await uploader.isConnected()) {
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     upload = !/^n/i.test(await rl.question('Upload to Strava? [Y/n] '));
     rl.close();
   }
   if (upload) {
     try {
-      const r = await stravaUpload(file, { name: o.name ?? rec.name, trainer: mode.kind !== 'route' });
+      const r = await uploadRide(ride, uploader, o.name);
       console.log(`✔ Strava: ${r.url}`);
     } catch (e: any) {
-      console.error(`✖ Strava upload failed: ${e.message}\n  retry: trainer strava upload "${file}"`);
+      console.error(`✖ Strava upload failed: ${e.message}\n  retry: trainer strava upload "${ride.file}"`);
     }
   }
   process.exit(0);

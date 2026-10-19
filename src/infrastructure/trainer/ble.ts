@@ -1,8 +1,7 @@
 import { EventEmitter } from 'node:events';
-import {
-  FTMS, OpCode, cmd, decodeControlResponse, decodeFeatures, decodeIndoorBikeData, type FtmsFeatures,
-} from '../ftms/codec.js';
-import type { DiscoveredTrainer, SimParams, Trainer } from './types.js';
+import type { Trainer } from '../../application/ports.js';
+import type { DiscoveredTrainer, SimParams, TrainerFeatures } from '../../domain/trainer-data.js';
+import { FTMS, OpCode, cmd, decodeControlResponse, decodeFeatures, decodeIndoorBikeData } from '../ftms/codec.js';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Noble = any;
@@ -80,7 +79,7 @@ export async function findTrainer(filter?: string, timeoutS = 15): Promise<BleFt
 interface Pending { op: number; resolve: () => void; reject: (e: Error) => void; timer: NodeJS.Timeout }
 
 export class BleFtmsTrainer extends EventEmitter implements Trainer {
-  features?: FtmsFeatures;
+  features?: TrainerFeatures;
   private cp?: Characteristic;
   private queue: Promise<void> = Promise.resolve();
   private pending?: Pending;
