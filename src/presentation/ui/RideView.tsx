@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
-import type { Session, Snapshot } from '../session.js';
+import type { Session, Snapshot } from '../../application/session.js';
 
 const BARS = '▁▂▃▄▅▆▇█';
 
@@ -123,8 +123,8 @@ export function RideView({ session, onExit }: { session: Session; onExit: () => 
     : s.autoPaused ? <Text color="yellow">❚❚ auto-paused — start pedalling</Text>
     : <Text color="green">● recording</Text>;
 
-  const adjustHint = s.mode === 'route' ? `difficulty ${Math.round(s.difficulty * 100)}%`
-    : s.mode === 'workout' ? `ERG offset ${s.ergOffsetW >= 0 ? '+' : ''}${s.ergOffsetW} W`
+  const adjustHint = s.mode === 'route' ? `difficulty ${Math.round((s.difficulty ?? 1) * 100)}%`
+    : s.mode === 'workout' ? `ERG offset ${(s.ergOffsetW ?? 0) >= 0 ? '+' : ''}${s.ergOffsetW ?? 0} W`
     : s.targetW != null ? `ERG ${s.targetW} W` : `grade ${sign(s.sentGradePct ?? 0)} %`;
 
   const line = '─'.repeat(width);

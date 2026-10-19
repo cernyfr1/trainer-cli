@@ -27,7 +27,7 @@ Requires Node ≥ 22. On macOS you need Xcode Command Line Tools for the BLE mod
 ```bash
 npm install          # builds @abandonware/noble (optional; --mock works without it)
 npm run build && npm link    # puts `trainer` on your PATH
-# or run from source:  npx tsx src/cli.ts …
+# or run from source:  npx tsx src/presentation/cli.ts …
 ```
 
 **macOS:** the first scan triggers a Bluetooth permission prompt for your terminal app

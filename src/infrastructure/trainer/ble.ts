@@ -1,86 +1,84 @@
 import { EventEmitter } from 'node:events';
-import {
-  FTMS, OpCode, cmd, decodeControlResponse, decodeFeatures, decodeIndoorBikeData, type FtmsFeatures,
-} from '../ftms/codec.js';
-import type { DiscoveredTrainer, SimParams, Trainer } from './types.js';
+import type { Trainer } from '../../application/ports.js';
+import type { DiscoveredTrainer, SimParams, TrainerFeatures } from '../../domain/trainer-data.js';
+import { FTMS, OpCode, cmd, decodeControlResponse, decodeFeatures, decodeIndoorBikeData } from '../ftms/codec.js';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Noble = any;
 type Peripheral = any;
 type Characteristic = any;
 
-let noblePromise: Promise<Noble> | undefined;
-
-/** Lazy-load noble so the app (and --mock) works where the native module isn't built. */
-export async function loadNoble(): Promise<Noble> {
-  noblePromise ??= import('@abandonware/noble' as string)
-    .then((m: any) => m.default ?? m)
-    .catch((e: Error) => {
-      throw new Error(
-        `Bluetooth support unavailable (@abandonware/noble failed to load: ${e.message}).\n` +
-        `Install build tools (Xcode CLT on macOS) and run "npm i @abandonware/noble", or use --mock.`,
-      );
-    });
-  return noblePromise;
-}
-
-async function poweredOn(noble: Noble): Promise<void> {
-  if (noble.state === 'poweredOn' || noble._state === 'poweredOn') return;
-  await new Promise<void>((resolve, reject) => {
-    const to = setTimeout(() => reject(new Error(`Bluetooth adapter not ready (state: ${noble.state})`)), 10_000);
-    noble.on('stateChange', (s: string) => { if (s === 'poweredOn') { clearTimeout(to); resolve(); } });
-  });
-}
-
 const norm = (uuid: string) => uuid.replace(/-/g, '').toLowerCase().replace(/^0000(....)00001000800000805f9b34fb$/, '$1');
 
-/** Scan for FTMS trainers for `seconds`. */
-export async function scanTrainers(seconds = 8, onFound?: (t: DiscoveredTrainer) => void): Promise<Map<string, { info: DiscoveredTrainer; p: Peripheral }>> {
-  const noble = await loadNoble();
-  await poweredOn(noble);
-  const found = new Map<string, { info: DiscoveredTrainer; p: Peripheral }>();
-  const onDiscover = (p: Peripheral) => {
-    const uuids: string[] = (p.advertisement?.serviceUuids ?? []).map(norm);
-    if (!uuids.includes(FTMS.service) || found.has(p.id)) return;
-    const info = { id: p.id, name: p.advertisement?.localName ?? '(unnamed)', rssi: p.rssi };
-    found.set(p.id, { info, p });
-    onFound?.(info);
-  };
-  noble.on('discover', onDiscover);
-  await noble.startScanningAsync([FTMS.service], false);
-  await new Promise((r) => setTimeout(r, seconds * 1000));
-  await noble.stopScanningAsync();
-  noble.removeListener('discover', onDiscover);
-  return found;
-}
+/** Finds FTMS trainers over Bluetooth. noble is loaded lazily so the app (and --mock) works where the native module isn't built. */
+export class BleScanner {
+  private noblePromise?: Promise<Noble>;
 
-/** Find a trainer whose name contains `filter` (case-insensitive) — first match wins. */
-export async function findTrainer(filter?: string, timeoutS = 15): Promise<BleFtmsTrainer> {
-  const noble = await loadNoble();
-  await poweredOn(noble);
-  return new Promise((resolve, reject) => {
-    const to = setTimeout(async () => {
-      noble.removeListener('discover', onDiscover);
-      await noble.stopScanningAsync();
-      reject(new Error(`No FTMS trainer${filter ? ` matching "${filter}"` : ''} found in ${timeoutS}s`));
-    }, timeoutS * 1000);
-    const onDiscover = async (p: Peripheral) => {
-      const name: string = p.advertisement?.localName ?? '';
-      if (filter && !name.toLowerCase().includes(filter.toLowerCase())) return;
-      clearTimeout(to);
-      noble.removeListener('discover', onDiscover);
-      await noble.stopScanningAsync();
-      resolve(new BleFtmsTrainer(p));
+  /** Scan for FTMS trainers for `seconds`. */
+  async scan(seconds = 8, onFound?: (t: DiscoveredTrainer) => void): Promise<Map<string, { info: DiscoveredTrainer; p: Peripheral }>> {
+    const noble = await this.ready();
+    const found = new Map<string, { info: DiscoveredTrainer; p: Peripheral }>();
+    const onDiscover = (p: Peripheral) => {
+      const uuids: string[] = (p.advertisement?.serviceUuids ?? []).map(norm);
+      if (!uuids.includes(FTMS.service) || found.has(p.id)) return;
+      const info = { id: p.id, name: p.advertisement?.localName ?? '(unnamed)', rssi: p.rssi };
+      found.set(p.id, { info, p });
+      onFound?.(info);
     };
     noble.on('discover', onDiscover);
-    noble.startScanningAsync([FTMS.service], false).catch(reject);
-  });
+    await noble.startScanningAsync([FTMS.service], false);
+    await new Promise((r) => setTimeout(r, seconds * 1000));
+    await noble.stopScanningAsync();
+    noble.removeListener('discover', onDiscover);
+    return found;
+  }
+
+  /** Find a trainer whose name contains `filter` (case-insensitive) — first match wins. */
+  async find(filter?: string, timeoutS = 15): Promise<BleFtmsTrainer> {
+    const noble = await this.ready();
+    return new Promise((resolve, reject) => {
+      const to = setTimeout(async () => {
+        noble.removeListener('discover', onDiscover);
+        await noble.stopScanningAsync();
+        reject(new Error(`No FTMS trainer${filter ? ` matching "${filter}"` : ''} found in ${timeoutS}s`));
+      }, timeoutS * 1000);
+      const onDiscover = async (p: Peripheral) => {
+        const name: string = p.advertisement?.localName ?? '';
+        if (filter && !name.toLowerCase().includes(filter.toLowerCase())) return;
+        clearTimeout(to);
+        noble.removeListener('discover', onDiscover);
+        await noble.stopScanningAsync();
+        resolve(new BleFtmsTrainer(p));
+      };
+      noble.on('discover', onDiscover);
+      noble.startScanningAsync([FTMS.service], false).catch(reject);
+    });
+  }
+
+  /** noble, loaded and with the adapter powered on. */
+  private async ready(): Promise<Noble> {
+    this.noblePromise ??= import('@abandonware/noble' as string)
+      .then((m: any) => m.default ?? m)
+      .catch((e: Error) => {
+        throw new Error(
+          `Bluetooth support unavailable (@abandonware/noble failed to load: ${e.message}).\n` +
+          `Install build tools (Xcode CLT on macOS) and run "npm i @abandonware/noble", or use --mock.`,
+        );
+      });
+    const noble = await this.noblePromise;
+    if (noble.state === 'poweredOn' || noble._state === 'poweredOn') return noble;
+    await new Promise<void>((resolve, reject) => {
+      const to = setTimeout(() => reject(new Error(`Bluetooth adapter not ready (state: ${noble.state})`)), 10_000);
+      noble.on('stateChange', (s: string) => { if (s === 'poweredOn') { clearTimeout(to); resolve(); } });
+    });
+    return noble;
+  }
 }
 
 interface Pending { op: number; resolve: () => void; reject: (e: Error) => void; timer: NodeJS.Timeout }
 
 export class BleFtmsTrainer extends EventEmitter implements Trainer {
-  features?: FtmsFeatures;
+  features?: TrainerFeatures;
   private cp?: Characteristic;
   private queue: Promise<void> = Promise.resolve();
   private pending?: Pending;
