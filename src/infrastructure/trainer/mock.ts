@@ -1,7 +1,8 @@
 import { EventEmitter } from 'node:events';
-import type { Clock, Trainer } from '../../application/ports.js';
+import type { Trainer } from '../../application/ports.js';
 import { RiderModel } from '../../domain/physics.js';
 import type { SimParams, TrainerFeatures } from '../../domain/trainer-data.js';
+import type { SimClock } from '../clock.js';
 import { decodeIndoorBikeData, encodeIndoorBikeData } from '../ftms/codec.js';
 
 /**
@@ -9,7 +10,7 @@ import { decodeIndoorBikeData, encodeIndoorBikeData } from '../ftms/codec.js';
  * - ERG mode: rider holds target ±noise.
  * - Sim mode: rider pedals a "natural" power that rises on climbs, eases on descents.
  * Data goes through the real FTMS encoder/decoder so the codec is exercised end-to-end.
- * Runs off the given clock: connect before the session starts so data is fresh on each tick.
+ * Steps with the simulated clock, always before the session's tick reads the data.
  */
 export class MockTrainer extends EventEmitter implements Trainer {
   readonly name = 'MockTrainer';
@@ -28,12 +29,12 @@ export class MockTrainer extends EventEmitter implements Trainer {
   private t = 0;
   private cancelTick?: () => void;
 
-  constructor(private clock: Clock, private basePowerW = 200, private model = new RiderModel(84, 0.32, 0.004)) {
+  constructor(private clock: SimClock, private basePowerW = 200, private model = new RiderModel(84, 0.32, 0.004)) {
     super();
   }
 
   async connect() {
-    this.cancelTick ??= this.clock.every(1, (dt) => this.tick(dt));
+    this.cancelTick ??= this.clock.onStep((dt) => this.tick(dt));
     this.emit('log', 'mock trainer connected');
   }
   async disconnect() {

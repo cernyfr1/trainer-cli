@@ -1,5 +1,6 @@
 import { clamp } from '../math.js';
 import type { Motion, ModeSnapshot, RideContext, RideMode } from './ride-mode.js';
+import { TrainerOdometer } from './trainer-odometer.js';
 
 export interface FreeModeOptions {
   ergW?: number;      // hold this power; otherwise simulate gradePct
@@ -15,7 +16,7 @@ export class FreeMode implements RideMode {
   readonly title = 'free ride';
   private ergW?: number;
   private gradePct?: number;
-  private dist = 0;
+  private readonly odometer = new TrainerOdometer();
 
   constructor(private opts: FreeModeOptions) {
     this.ergW = opts.ergW;
@@ -26,10 +27,7 @@ export class FreeMode implements RideMode {
     return this.ergW !== undefined ? ctx.sendErg(this.ergW) : ctx.sendGrade(this.gradePct ?? 0);
   }
 
-  advance(ctx: RideContext, dtS: number): Motion {
-    if (ctx.recording) this.dist += ctx.trainerSpeedMs * dtS;
-    return { speedMs: ctx.trainerSpeedMs, distanceM: this.dist };
-  }
+  advance(ctx: RideContext, dtS: number): Motion { return this.odometer.advance(ctx, dtS); }
 
   adjust(dir: 1 | -1) {
     if (this.ergW !== undefined) this.ergW = Math.max(0, this.ergW + dir * 5);

@@ -31,12 +31,12 @@ export class RouteMode implements RideMode {
 
   get title() { return this.route.name; }
 
-  private sentGrade(): number {
-    const g = this.cursor.at(this.dist).gradePct;
-    return clamp(g, this.opts.minGrade, this.opts.maxGrade) * this.difficulty;
+  /** Road grade → what the trainer gets: clamped to the trainer's range, scaled by difficulty. */
+  private sentGrade(roadGradePct: number): number {
+    return clamp(roadGradePct, this.opts.minGrade, this.opts.maxGrade) * this.difficulty;
   }
 
-  control(ctx: RideContext) { return ctx.sendGrade(this.sentGrade()); }
+  control(ctx: RideContext) { return ctx.sendGrade(this.sentGrade(this.cursor.at(this.dist).gradePct)); }
 
   advance(ctx: RideContext, dtS: number): Motion {
     const here = this.cursor.at(this.dist);
@@ -58,7 +58,7 @@ export class RouteMode implements RideMode {
   snapshot(): ModeSnapshot {
     const here = this.cursor.at(this.dist);
     return {
-      gradePct: here.gradePct, sentGradePct: this.sentGrade(), altitudeM: here.ele, ascentM: this.ascent,
+      gradePct: here.gradePct, sentGradePct: this.sentGrade(here.gradePct), altitudeM: here.ele, ascentM: this.ascent,
       routeTotalM: this.route.totalDist, profile: this.profile, difficulty: this.difficulty,
     };
   }

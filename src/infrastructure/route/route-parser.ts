@@ -1,8 +1,5 @@
 import type { Route } from '../../domain/route.js';
+import type { FileFormat } from '../format-loader.js';
 
-/** One course file format. */
-export interface RouteParser {
-  /** Lower-case file extensions incl. the dot; the first one is shown in error hints. */
-  readonly extensions: readonly string[];
-  parse(data: Uint8Array, fallbackName: string): Route;
-}
+/** One course file format, parsed from raw bytes. */
+export type RouteParser = FileFormat<Route, Uint8Array>;

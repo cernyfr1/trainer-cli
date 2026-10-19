@@ -19,11 +19,13 @@ export class RideFinisher {
     const activity = session.recorder.finish(session.now);
     const file = await this.store.save(activity);
     const s = activity.samples;
+    // samples without power are skipped, like the FIT file's avg_power, so both agree
+    const powers = s.flatMap((x) => (x.powerW === undefined ? [] : [x.powerW]));
     return {
       file,
       activity,
       distanceM: s[s.length - 1].distanceM,
-      avgPowerW: Math.round(s.reduce((a, x) => a + (x.powerW ?? 0), 0) / s.length),
+      avgPowerW: powers.length ? Math.round(powers.reduce((a, b) => a + b, 0) / powers.length) : 0,
     };
   }
 

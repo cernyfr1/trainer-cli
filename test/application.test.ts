@@ -3,8 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { AutoPause } from '../src/application/auto-pause.js';
 import type { Clock, Trainer } from '../src/application/ports.js';
 import { PowerStats } from '../src/application/power-stats.js';
+import { Session } from '../src/application/session.js';
 import { TrainerCommander } from '../src/application/trainer-commander.js';
+import { WorkoutMode } from '../src/domain/modes/workout-mode.js';
 import type { SimParams } from '../src/domain/trainer-data.js';
+import { Power, Workout } from '../src/domain/workout.js';
+import { SimClock } from '../src/infrastructure/clock.js';
 import { RouteLoader } from '../src/infrastructure/route/loader.js';
 import { WorkoutLoader } from '../src/infrastructure/workout/loader.js';
 
@@ -83,5 +87,53 @@ describe('loaders', () => {
   it('name the supported formats when the extension is unknown', async () => {
     await expect(new RouteLoader().load('x.tcx')).rejects.toThrow('Unsupported route format ".tcx" — use .gpx or .fit');
     await expect(new WorkoutLoader().load('x.erg')).rejects.toThrow('Unsupported workout format ".erg" — use .yaml or .zwo');
+  });
+});
+
+describe('Session timing', () => {
+  const workout = new Workout({ name: 'w', steps: [{ label: 'a', kind: 'steady', durationS: 30, from: Power.watts(180), to: Power.watts(180) }] });
+
+  it('sends the first target as soon as it starts', async () => {
+    const trainer = new FakeTrainer();
+    const s = new Session(trainer, new WorkoutMode(workout, 200), new ManualClock(), { crr: 0.004, cw: 0.2 });
+    s.start();
+    await Promise.resolve();
+    expect(trainer.sent).toEqual(['erg 180']);
+    s.stop();
+  });
+
+  it('freezes ride time at stop, even while a simulated device keeps the clock stepping', async () => {
+    const clock = new SimClock(1000);
+    const keepAlive = clock.every(1, () => undefined); // stands in for anything still running after the ride
+    const trainer = new FakeTrainer();
+    const s = new Session(trainer, new WorkoutMode(workout, 200), clock, { crr: 0.004, cw: 0.2 });
+    s.start();
+    for (let i = 0; i < 5; i++) trainer.emit('data', { powerW: 180, cadenceRpm: 85 });
+    await new Promise((r) => setTimeout(r, 20));
+    s.stop();
+    const stoppedAt = s.now.getTime();
+    await new Promise((r) => setTimeout(r, 30)); // ~30 more simulated seconds
+    keepAlive();
+    expect(clock.now()).toBeGreaterThan(stoppedAt);
+    expect(s.now.getTime()).toBe(stoppedAt);
+  });
+});
+
+describe('SimClock', () => {
+  it('runs device step hooks before timers, whatever the registration order', async () => {
+    const clock = new SimClock(1000);
+    const order: string[] = [];
+    const cancelTimer = clock.every(1, () => order.push('session'));
+    const cancelHook = clock.onStep(() => order.push('device'));
+    await new Promise((r) => setTimeout(r, 10));
+    cancelTimer(); cancelHook();
+    expect(order.slice(0, 4)).toEqual(['device', 'session', 'device', 'session']);
+  });
+
+  it('does not advance time while no timer is registered', async () => {
+    const clock = new SimClock(1000, 0);
+    clock.onStep(() => undefined);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(clock.now()).toBe(0);
   });
 });

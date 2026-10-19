@@ -51,6 +51,8 @@ export class Session extends EventEmitter {
   private manualPause = false;
   private finished = false;
   private cancelTick?: () => void;
+  private stoppedAt?: Date;
+  private readonly ctx: RideContext;
   private logLines: string[] = [];
   private connected = true;
 
@@ -58,6 +60,7 @@ export class Session extends EventEmitter {
     super();
     this.recorder = opts.recorder ?? new Recorder(mode.recordingKind, mode.title);
     this.commander = new TrainerCommander(trainer, clock, { crr: opts.crr, cw: opts.cw });
+    this.ctx = this.createContext();
     trainer.on('data', (d: TrainerData) => { this.latest = { ...this.latest, ...d }; this.latestAt = this.clock.now(); });
     trainer.on('log', (l: string) => this.log(l));
     trainer.on('disconnect', () => { this.connected = false; this.log('trainer disconnected'); });
@@ -67,16 +70,21 @@ export class Session extends EventEmitter {
     this.recorder.start(this.now);
     this.log(`started ${this.mode.kind}`);
     this.emitSnapshot();
+    // first target goes out now, not on the first tick
+    this.mode.control(this.ctx).catch((e: Error) => this.log(`control: ${e.message}`));
     this.cancelTick = this.clock.every(1, (dt) => void this.tick(dt));
   }
 
   stop() {
     this.cancelTick?.();
     this.cancelTick = undefined;
+    // freeze ride time: a simulated clock keeps running until the trainer disconnects
+    this.stoppedAt ??= new Date(this.clock.now());
     if (!this.finished) { this.finished = true; this.emitSnapshot(); this.emit('finished', this.recorder); }
   }
 
-  get now() { return new Date(this.clock.now()); }
+  /** Ride time; frozen once the session has stopped. */
+  get now() { return this.stoppedAt ?? new Date(this.clock.now()); }
 
   togglePause() {
     this.manualPause = !this.manualPause;
@@ -106,12 +114,14 @@ export class Session extends EventEmitter {
     this.logLines = [...this.logLines.slice(-4), `${t} ${s}`];
   }
 
-  private context(): RideContext {
+  /** One live view of the session for the mode; values are read at the moment the mode asks. */
+  private createContext(): RideContext {
+    const session = this;
     return {
-      powerW: this.power,
-      trainerSpeedMs: (this.latest.speedKmh ?? 0) / 3.6,
-      timerS: this.recorder.timerSeconds,
-      recording: !this.recorder.isPaused,
+      get powerW() { return session.power; },
+      get trainerSpeedMs() { return (session.latest.speedKmh ?? 0) / 3.6; },
+      get timerS() { return session.recorder.timerSeconds; },
+      get recording() { return !session.recorder.isPaused; },
       sendErg: (w) => this.commander.sendErg(w),
       sendGrade: (g) => this.commander.sendGrade(g),
       lap: (label) => this.recorder.lap(this.now, label),
@@ -130,7 +140,7 @@ export class Session extends EventEmitter {
     if (this.autoPause.update(power, cadence)) this.log(this.autoPause.isActive ? 'auto-paused' : 'auto-resumed');
     this.applyPause();
 
-    const ctx = this.context();
+    const ctx = this.ctx;
     try {
       await this.mode.control(ctx);
     } catch (e: any) {
@@ -149,7 +159,7 @@ export class Session extends EventEmitter {
 
     this.emitSnapshot();
 
-    const reason = this.mode.finishReason(this.context());
+    const reason = this.mode.finishReason(ctx);
     if (reason) { this.log(reason); this.stop(); }
   }
 
@@ -172,7 +182,7 @@ export class Session extends EventEmitter {
       avgPowerW: this.stats.averageW,
       lap: this.recorder.lapCount,
       log: this.logLines,
-      ...this.mode.snapshot(this.context()),
+      ...this.mode.snapshot(this.ctx),
     };
     this.emit('snapshot', snap);
   }

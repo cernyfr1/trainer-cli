@@ -1,8 +1,5 @@
 import type { Workout } from '../../domain/workout.js';
+import type { FileFormat } from '../format-loader.js';
 
-/** One workout file format. */
-export interface WorkoutParser {
-  /** Lower-case file extensions incl. the dot; the first one is shown in error hints. */
-  readonly extensions: readonly string[];
-  parse(text: string, fallbackName: string): Workout;
-}
+/** One workout file format, parsed from text. */
+export type WorkoutParser = FileFormat<Workout, string>;

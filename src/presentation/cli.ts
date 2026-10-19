@@ -6,7 +6,6 @@ import { DEFAULTS, type Config } from '../domain/config.js';
 import { FreeMode } from '../domain/modes/free-mode.js';
 import { RouteMode } from '../domain/modes/route-mode.js';
 import { WorkoutMode } from '../domain/modes/workout-mode.js';
-import { RiderModel } from '../domain/physics.js';
 import { ConfigFile } from '../infrastructure/config-file.js';
 import { RouteLoader } from '../infrastructure/route/loader.js';
 import { StravaClient, StravaTokenFile } from '../infrastructure/strava.js';
@@ -52,8 +51,8 @@ rideOptions(program.command('ride <route>')
   .action(async (file: string, o: RideOpts) => {
     const route = await new RouteLoader().load(file);
     console.log(`${route.name}: ${(route.totalDist / 1000).toFixed(1)} km, ↑ ${Math.round(route.ascent)} m, ${route.points.length} pts`);
-    await runner.run((cfg, columns) => new RouteMode(route, {
-      model: RiderModel.fromConfig(cfg),
+    await runner.run((cfg, model, columns) => new RouteMode(route, {
+      model,
       minGrade: cfg.minGrade, maxGrade: cfg.maxGrade, difficulty: cfg.difficulty, profileColumns: columns - 10,
     }), o);
   });

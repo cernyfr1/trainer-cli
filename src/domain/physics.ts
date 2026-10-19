@@ -13,6 +13,9 @@ export class RiderModel {
 
   static fromConfig(cfg: Config) { return new RiderModel(cfg.riderMassKg + cfg.bikeMassKg, cfg.cda, cfg.crr); }
 
+  /** Wind resistance coefficient kg/m (½·ρ·CdA), as FTMS simulation wants it. */
+  get cw() { return 0.5 * this.rho * this.cda; }
+
   resistiveForce(v: number, gradePct: number): number {
     const theta = Math.atan(gradePct / 100);
     const aero = 0.5 * this.rho * this.cda * v * Math.abs(v);

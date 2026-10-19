@@ -13,13 +13,14 @@ interface Timer { periodS: number; dueS: number; fn: (dtS: number) => void }
 
 /**
  * Simulated time that runs `speedup`× faster than the wall clock, in 1 s steps.
- * All timers fire in registration order on the same step, so a mock trainer registered
- * before the session produces its data before the session reads it.
+ * Each step first runs the `onStep` hooks (simulated devices produce their data), then the
+ * `every` timers (the session reads it). Time only runs while at least one timer is registered.
  */
 export class SimClock implements Clock {
   private t: number;
   private elapsedS = 0;
   private timers: Timer[] = [];
+  private stepHooks: ((dtS: number) => void)[] = [];
   private driver?: NodeJS.Timeout;
 
   constructor(private speedup = 1, start = Date.now()) { this.t = start; }
@@ -37,9 +38,16 @@ export class SimClock implements Clock {
     };
   }
 
+  /** Run fn at the start of every step, before any timer. For simulated devices. */
+  onStep(fn: (dtS: number) => void) {
+    this.stepHooks.push(fn);
+    return () => { this.stepHooks = this.stepHooks.filter((x) => x !== fn); };
+  }
+
   private step() {
     this.elapsedS += 1;
     this.t += 1000;
+    for (const hook of [...this.stepHooks]) hook(1);
     for (const timer of [...this.timers]) {
       if (timer.dueS > this.elapsedS || !this.timers.includes(timer)) continue;
       timer.dueS += timer.periodS;

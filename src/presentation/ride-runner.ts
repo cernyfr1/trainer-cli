@@ -6,6 +6,7 @@ import { RideFinisher, type SavedRide } from '../application/ride.js';
 import { Session, type Snapshot } from '../application/session.js';
 import type { Config } from '../domain/config.js';
 import type { RideMode } from '../domain/modes/ride-mode.js';
+import { RiderModel } from '../domain/physics.js';
 import { FitFileStore } from '../infrastructure/activity-store.js';
 import { RealClock, SimClock } from '../infrastructure/clock.js';
 import type { ConfigFile } from '../infrastructure/config-file.js';
@@ -25,8 +26,8 @@ export interface RideOpts {
   difficulty?: string;
 }
 
-/** Builds the ride mode once config and terminal width are known. */
-export type ModeFactory = (cfg: Config, columns: number) => RideMode;
+/** Builds the ride mode once config, rider model and terminal width are known. */
+export type ModeFactory = (cfg: Config, model: RiderModel, columns: number) => RideMode;
 
 /** Runs one ride end to end: connect → ride (TUI or log lines) → save → optional Strava upload. */
 export class RideRunner {
@@ -42,7 +43,8 @@ export class RideRunner {
 
     const tui = o.tui && process.stdout.isTTY && process.stdin.isTTY;
     const cols = Math.max(60, Math.min(120, (process.stdout.columns ?? 80) - 2));
-    const session = new Session(trainer, makeMode(cfg, cols), clock, { crr: cfg.crr, cw: 0.5 * 1.225 * cfg.cda });
+    const model = RiderModel.fromConfig(cfg);
+    const session = new Session(trainer, makeMode(cfg, model, cols), clock, { crr: model.crr, cw: model.cw });
 
     await this.ride(session, tui);
     await trainer.disconnect().catch(() => undefined);
@@ -58,7 +60,7 @@ export class RideRunner {
 
   private async connectTrainer(o: RideOpts, cfg: Config, clock: Clock): Promise<Trainer> {
     let trainer: Trainer;
-    if (o.mock) trainer = new MockTrainer(clock, cfg.ftp * 0.8);
+    if (clock instanceof SimClock) trainer = new MockTrainer(clock, cfg.ftp * 0.8);
     else {
       const filter = o.trainer ?? cfg.trainerName;
       console.log(`Looking for trainer${filter ? ` "${filter}"` : ''}… (pedal to wake it)`);

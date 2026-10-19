@@ -86,8 +86,8 @@ Adding things usually means one new file in one layer:
 | `src/infrastructure/ftms/codec.ts` | Encode Control Point commands, decode Indoor Bike Data / responses / feature bits. Pure functions. |
 | `src/infrastructure/trainer/ble.ts` | `BleScanner` (lazy noble, scan/find) and `BleFtmsTrainer` (GATT, 0x2AD2 notify, 0x2AD9 control). |
 | `src/infrastructure/trainer/mock.ts` | Physics-based fake trainer driven by the clock (responds to ERG / sim commands, plausible cadence). |
-| `src/infrastructure/clock.ts` | `RealClock`, `SimClock(speedup)`. |
-| `src/infrastructure/route/*.ts`, `workout/*.ts` | `RouteLoader` / `WorkoutLoader` pick a `GpxRouteParser`, `FitRouteParser`, `YamlWorkoutParser` or `ZwoWorkoutParser` by extension. |
+| `src/infrastructure/clock.ts` | `RealClock`, `SimClock(speedup)`; `SimClock.onStep` runs simulated devices before the session's tick. |
+| `src/infrastructure/format-loader.ts`, `route/*.ts`, `workout/*.ts` | `FormatLoader` base: pick a `FileFormat` by extension. `RouteLoader` (`GpxRouteParser`, `FitRouteParser`) and `WorkoutLoader` (`YamlWorkoutParser`, `ZwoWorkoutParser`) extend it. |
 | `src/infrastructure/fit-encoder.ts`, `activity-store.ts` | `FitEncoder`: `FinishedActivity` → FIT bytes; `FitFileStore` writes `~/.trainer-cli/activities/*.fit`. |
 | `src/infrastructure/strava.ts` | `StravaClient` (OAuth loopback, token refresh, upload + poll), `StravaTokenFile`. |
 | `src/infrastructure/config-file.ts` | `ConfigFile`: `~/.trainer-cli` paths, config YAML load/save. |

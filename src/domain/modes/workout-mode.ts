@@ -1,5 +1,6 @@
 import type { Workout, WorkoutTarget } from '../workout.js';
 import type { Motion, ModeSnapshot, RideContext, RideMode } from './ride-mode.js';
+import { TrainerOdometer } from './trainer-odometer.js';
 
 /** Structured workout: ERG targets from the step list, one lap per step, free-ride steps at 0 % grade. */
 export class WorkoutMode implements RideMode {
@@ -7,7 +8,7 @@ export class WorkoutMode implements RideMode {
   readonly recordingKind = 'indoor';
   private ergOffset = 0;
   private lastStepIdx = -1;
-  private dist = 0;
+  private readonly odometer = new TrainerOdometer();
 
   constructor(readonly workout: Workout, readonly ftp: number) {}
 
@@ -27,10 +28,7 @@ export class WorkoutMode implements RideMode {
     return ctx.sendErg(ctx.recording ? t.watts + this.ergOffset : Math.min(100, t.watts));
   }
 
-  advance(ctx: RideContext, dtS: number): Motion {
-    if (ctx.recording) this.dist += ctx.trainerSpeedMs * dtS;
-    return { speedMs: ctx.trainerSpeedMs, distanceM: this.dist };
-  }
+  advance(ctx: RideContext, dtS: number): Motion { return this.odometer.advance(ctx, dtS); }
 
   adjust(dir: 1 | -1) {
     this.ergOffset += dir * 5;
