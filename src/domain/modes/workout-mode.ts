@@ -1,4 +1,4 @@
-import { targetAt, type Workout, type WorkoutTarget } from '../workout.js';
+import type { Workout, WorkoutTarget } from '../workout.js';
 import type { Motion, ModeSnapshot, RideContext, RideMode } from './ride-mode.js';
 
 /** Structured workout: ERG targets from the step list, one lap per step, free-ride steps at 0 % grade. */
@@ -13,7 +13,7 @@ export class WorkoutMode implements RideMode {
 
   get title() { return this.workout.name; }
 
-  private target(ctx: RideContext): WorkoutTarget { return targetAt(this.workout, ctx.timerS, this.ftp); }
+  private target(ctx: RideContext): WorkoutTarget { return this.workout.targetAt(ctx.timerS, this.ftp); }
 
   control(ctx: RideContext) {
     const t = this.target(ctx);

@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type { Clock, Trainer } from '../../application/ports.js';
-import { stepSpeed, type RiderModel } from '../../domain/physics.js';
+import { RiderModel } from '../../domain/physics.js';
 import type { SimParams, TrainerFeatures } from '../../domain/trainer-data.js';
 import { decodeIndoorBikeData, encodeIndoorBikeData } from '../ftms/codec.js';
 
@@ -28,7 +28,7 @@ export class MockTrainer extends EventEmitter implements Trainer {
   private t = 0;
   private cancelTick?: () => void;
 
-  constructor(private clock: Clock, private basePowerW = 200, private model: RiderModel = { massKg: 84, cda: 0.32, crr: 0.004 }) {
+  constructor(private clock: Clock, private basePowerW = 200, private model = new RiderModel(84, 0.32, 0.004)) {
     super();
   }
 
@@ -53,7 +53,7 @@ export class MockTrainer extends EventEmitter implements Trainer {
     // rider responds with a short lag
     this.power += (target - this.power) * Math.min(1, dt * 0.6) + noise() * 6;
     this.power = Math.max(0, this.power);
-    this.v = stepSpeed(this.v, this.power, this.mode === 'erg' ? 0 : this.grade, this.model, dt);
+    this.v = this.model.stepSpeed(this.v, this.power, this.mode === 'erg' ? 0 : this.grade, dt);
     this.dist += this.v * dt;
     const hrTarget = 70 + this.power * 0.38;
     this.hr += (hrTarget - this.hr) * Math.min(1, dt / 25);

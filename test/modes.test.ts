@@ -3,8 +3,9 @@ import { FreeMode } from '../src/domain/modes/free-mode.js';
 import type { RideContext } from '../src/domain/modes/ride-mode.js';
 import { RouteMode } from '../src/domain/modes/route-mode.js';
 import { WorkoutMode } from '../src/domain/modes/workout-mode.js';
-import { buildRoute } from '../src/domain/route.js';
-import { buildWorkout } from '../src/domain/workout.js';
+import { RiderModel } from '../src/domain/physics.js';
+import { Route } from '../src/domain/route.js';
+import { Power, Workout } from '../src/domain/workout.js';
 
 /** Records what a mode asks of the session instead of talking to a trainer. */
 function fakeCtx(over: Partial<RideContext> = {}) {
@@ -21,9 +22,9 @@ function fakeCtx(over: Partial<RideContext> = {}) {
   return { ctx, sent, laps };
 }
 
-const model = { massKg: 84, cda: 0.32, crr: 0.004 };
+const model = new RiderModel(84, 0.32, 0.004);
 // 1 km at 10 %, then 1 km flat
-const hill = buildRoute('hill', [{ dist: 0, ele: 0 }, { dist: 1000, ele: 100 }, { dist: 2000, ele: 100 }]);
+const hill = Route.fromPoints('hill', [{ dist: 0, ele: 0 }, { dist: 1000, ele: 100 }, { dist: 2000, ele: 100 }]);
 
 describe('RouteMode', () => {
   it('sends clamped grade scaled by difficulty', async () => {
@@ -49,11 +50,11 @@ describe('RouteMode', () => {
 });
 
 describe('WorkoutMode', () => {
-  const w = buildWorkout({
+  const w = new Workout({
     name: 'w',
     steps: [
-      { label: 'a', kind: 'steady', durationS: 60, from: { ftp: 0.5 }, to: { ftp: 0.5 } },
-      { label: 'b', kind: 'free', durationS: 60, from: { watts: 0 }, to: { watts: 0 } },
+      { label: 'a', kind: 'steady', durationS: 60, from: Power.ftp(0.5), to: Power.ftp(0.5) },
+      { label: 'b', kind: 'free', durationS: 60, from: Power.watts(0), to: Power.watts(0) },
     ],
   });
 

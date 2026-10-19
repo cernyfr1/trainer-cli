@@ -1,43 +1,50 @@
 export interface RoutePoint { dist: number; ele: number; lat?: number; lon?: number }
-export interface Route {
-  name: string;
-  points: RoutePoint[];
-  totalDist: number;
-  ascent: number;
-}
 export interface RouteSample extends RoutePoint { gradePct: number }
 
 /** A point as read from a course file; any field may be missing. */
 export type RawRoutePoint = { lat?: number; lon?: number; ele?: number; dist?: number };
 
 const R = 6371008.8;
-export function haversine(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const toRad = Math.PI / 180;
-  const dLat = (lat2 - lat1) * toRad, dLon = (lon2 - lon1) * toRad;
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
-}
 
-/** Raw points → Route: fills missing distance (haversine) and elevation, drops stationary points. */
-export function buildRoute(name: string, raw: RawRoutePoint[]): Route {
-  const pts: RoutePoint[] = [];
-  let dist = 0;
-  let lastEle = raw.find((p) => p.ele !== undefined)?.ele ?? 0;
-  for (let i = 0; i < raw.length; i++) {
-    const p = raw[i];
-    const prev = pts[pts.length - 1];
-    if (p.dist !== undefined) dist = p.dist;
-    else if (prev && p.lat !== undefined && prev.lat !== undefined && p.lon !== undefined && prev.lon !== undefined) {
-      dist += haversine(prev.lat, prev.lon, p.lat, p.lon);
-    }
-    if (p.ele !== undefined && Number.isFinite(p.ele)) lastEle = p.ele;
-    if (prev && dist <= prev.dist) continue; // drop duplicates / stationary points
-    pts.push({ dist, ele: lastEle, lat: p.lat, lon: p.lon });
+export class Route {
+  readonly totalDist: number;
+  readonly ascent: number;
+
+  constructor(readonly name: string, readonly points: readonly RoutePoint[]) {
+    if (points.length < 2) throw new Error('Route has fewer than 2 usable points');
+    let ascent = 0;
+    for (let i = 1; i < points.length; i++) ascent += Math.max(0, points[i].ele - points[i - 1].ele);
+    this.totalDist = points[points.length - 1].dist;
+    this.ascent = ascent;
   }
-  if (pts.length < 2) throw new Error('Route has fewer than 2 usable points');
-  let ascent = 0;
-  for (let i = 1; i < pts.length; i++) ascent += Math.max(0, pts[i].ele - pts[i - 1].ele);
-  return { name, points: pts, totalDist: pts[pts.length - 1].dist, ascent };
+
+  /** Raw points → Route: fills missing distance (haversine) and elevation, drops stationary points. */
+  static fromPoints(name: string, raw: readonly RawRoutePoint[]): Route {
+    const pts: RoutePoint[] = [];
+    let dist = 0;
+    let lastEle = raw.find((p) => p.ele !== undefined)?.ele ?? 0;
+    for (const p of raw) {
+      const prev = pts[pts.length - 1];
+      if (p.dist !== undefined) dist = p.dist;
+      else if (prev && p.lat !== undefined && prev.lat !== undefined && p.lon !== undefined && prev.lon !== undefined) {
+        dist += Route.haversine(prev.lat, prev.lon, p.lat, p.lon);
+      }
+      if (p.ele !== undefined && Number.isFinite(p.ele)) lastEle = p.ele;
+      if (prev && dist <= prev.dist) continue; // drop duplicates / stationary points
+      pts.push({ dist, ele: lastEle, lat: p.lat, lon: p.lon });
+    }
+    return new Route(name, pts);
+  }
+
+  private static haversine(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const toRad = Math.PI / 180;
+    const dLat = (lat2 - lat1) * toRad, dLon = (lon2 - lon1) * toRad;
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+  }
+
+  /** Sequential distance lookup with grade smoothed over `window` metres. */
+  cursor(window = 30) { return new RouteCursor(this, window); }
 }
 
 /** Distance-indexed lookup with smoothed grade. Keeps a cursor for O(1) sequential access. */

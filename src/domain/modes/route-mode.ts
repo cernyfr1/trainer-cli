@@ -1,6 +1,6 @@
 import { clamp } from '../math.js';
-import { stepSpeed, type RiderModel } from '../physics.js';
-import { RouteCursor, type Route } from '../route.js';
+import type { RiderModel } from '../physics.js';
+import type { Route, RouteCursor } from '../route.js';
 import type { Motion, ModeSnapshot, RideContext, RideMode } from './ride-mode.js';
 
 export interface RouteModeOptions {
@@ -24,7 +24,7 @@ export class RouteMode implements RideMode {
   private lastAlt?: number;
 
   constructor(readonly route: Route, private opts: RouteModeOptions) {
-    this.cursor = new RouteCursor(route);
+    this.cursor = route.cursor();
     this.profile = this.cursor.profile(opts.profileColumns ?? 60);
     this.difficulty = opts.difficulty;
   }
@@ -40,7 +40,7 @@ export class RouteMode implements RideMode {
 
   advance(ctx: RideContext, dtS: number): Motion {
     const here = this.cursor.at(this.dist);
-    this.v = stepSpeed(this.v, ctx.recording ? ctx.powerW : 0, here.gradePct, this.opts.model, dtS);
+    this.v = this.opts.model.stepSpeed(this.v, ctx.recording ? ctx.powerW : 0, here.gradePct, dtS);
     if (ctx.recording) this.dist = Math.min(this.dist + this.v * dtS, this.route.totalDist);
     const p = this.cursor.at(this.dist);
     if (this.lastAlt !== undefined && ctx.recording) this.ascent += Math.max(0, p.ele - this.lastAlt);

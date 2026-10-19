@@ -1,6 +1,9 @@
 import type { EventEmitter } from 'node:events';
 import type { FinishedActivity } from '../domain/activity.js';
+import type { Config } from '../domain/config.js';
+import type { Route } from '../domain/route.js';
 import type { SimParams, TrainerFeatures } from '../domain/trainer-data.js';
+import type { Workout } from '../domain/workout.js';
 
 /**
  * Anything the session engine can drive. Implementations: BleFtmsTrainer, MockTrainer.
@@ -34,4 +37,20 @@ export interface UploadResult { url: string }
 export interface ActivityUploader {
   isConnected(): Promise<boolean>;
   upload(file: string, opts: { name?: string; indoor: boolean }): Promise<UploadResult>;
+}
+
+/** Loads a course from a file (GPX, FIT, …). */
+export interface RouteSource {
+  load(path: string): Promise<Route>;
+}
+
+/** Loads a structured workout from a file (YAML, ZWO, …). */
+export interface WorkoutSource {
+  load(path: string): Promise<Workout>;
+}
+
+/** Persisted user settings. */
+export interface ConfigStore {
+  load(): Promise<Config>;
+  save(patch: Partial<Config>): Promise<Config>;
 }

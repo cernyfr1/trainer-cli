@@ -24,16 +24,18 @@ Light **onion architecture**: four layers, dependencies point inwards only.
 
 ```
   ┌─────────────────────────────── presentation ───────────────────────────────┐
-  │  cli.ts (commander, composition root)  ·  ui/RideView.tsx (Ink dashboard)   │
+  │  cli.ts (commander, composition root) · RideRunner · ui/RideView.tsx (Ink) │
   │  ┌──────────────────────────── infrastructure ───────────────────────────┐  │
-  │  │ BLE FTMS trainer · mock trainer · FTMS codec · Real/SimClock          │  │
-  │  │ GPX/FIT/YAML/ZWO parsers · FIT encoder · FIT file store · Strava      │  │
+  │  │ BleScanner · BleFtmsTrainer · MockTrainer · FTMS codec · Real/SimClock│  │
+  │  │ Route/WorkoutLoader + parsers · FitEncoder · FitFileStore             │  │
+  │  │ StravaClient · ConfigFile                                             │  │
   │  │  ┌───────────────────────── application ──────────────────────────┐   │  │
-  │  │  │ Session engine (1 Hz tick) · saveRide / uploadRide use cases   │   │  │
-  │  │  │ ports: Trainer · Clock · ActivityStore · ActivityUploader      │   │  │
+  │  │  │ Session (1 Hz tick) + AutoPause · PowerStats · TrainerCommander│   │  │
+  │  │  │ RideFinisher · ports: Trainer · Clock · ActivityStore ·        │   │  │
+  │  │  │ ActivityUploader · RouteSource · WorkoutSource · ConfigStore   │   │  │
   │  │  │  ┌────────────────────────── domain ────────────────────────┐  │   │  │
-  │  │  │  │ RideMode strategies (route · workout · free) · physics    │  │   │  │
-  │  │  │  │ Route + RouteCursor · Workout + targetAt · Recorder       │  │   │  │
+  │  │  │  │ RideMode strategies (route · workout · free) · RiderModel │  │   │  │
+  │  │  │  │ Route + RouteCursor · Workout · Power · Duration · Recorder│  │   │  │
   │  │  │  │ Config · TrainerData                                      │  │   │  │
   │  │  │  └───────────────────────────────────────────────────────────┘  │   │  │
   │  │  └─────────────────────────────────────────────────────────────────┘   │  │
@@ -46,8 +48,13 @@ Rules (enforced by `test/architecture.test.ts`):
 - **domain** imports only domain, and no packages at all: pure TypeScript, no I/O.
 - **application** imports domain + its own ports (only `node:events` from outside).
 - **infrastructure** implements the ports and may use any package; it never imports presentation.
-- **presentation** wires concrete adapters together (`cli.ts` is the only place that does `new`
-  on infrastructure classes) and renders the UI.
+- **presentation** creates the concrete adapters (`cli.ts` for long-lived ones, `RideRunner` for
+  per-ride ones) and renders the UI.
+
+Style: object-oriented. Behaviour lives on the object that owns the data (`workout.targetAt`,
+`route.cursor()`, `model.stepSpeed`, `Power.parse`), file formats and services sit behind
+interfaces, and `Session` composes small collaborators. Deliberately left as plain functions:
+the FTMS codec (stateless byte transforms) and the Ink UI (function components + hooks).
 
 Everything above the `Trainer` port is BLE-free, so the whole app runs and is testable with
 `--mock`. The mock runs on a `SimClock` (speedable), the BLE trainer on a `RealClock`, and the
@@ -58,7 +65,7 @@ Adding things usually means one new file in one layer:
 | Want | Add |
 |------|-----|
 | new ride mode | a `RideMode` in `domain/modes/` + a command in `cli.ts` |
-| new workout/course format | a parser in `infrastructure/workout/` or `route/` + a branch in its `loader.ts` |
+| new workout/course format | a `WorkoutParser` / `RouteParser` class + one entry in its loader's parser list |
 | new device (HR strap, ANT+) | an adapter in `infrastructure/` behind a port |
 | new upload target | an `ActivityUploader` in `infrastructure/` |
 
@@ -67,22 +74,24 @@ Adding things usually means one new file in one layer:
 | Path | Responsibility |
 |------|----------------|
 | `src/domain/modes/*.ts` | `RideMode` strategy + `RouteMode`, `WorkoutMode`, `FreeMode`: trainer targets, motion, +/- behaviour, end condition, mode-specific snapshot. |
-| `src/domain/physics.ts` | Rider+bike model: power ↔ speed on a given grade. |
-| `src/domain/route.ts` | `Route { points[{dist, ele, lat, lon}] }`, `buildRoute`, `RouteCursor` (smoothed grade lookup). |
-| `src/domain/workout.ts` | `Workout`/`Step` model, duration/power parsing, `targetAt(t)` resolver. |
+| `src/domain/physics.ts` | `RiderModel`: power ↔ speed on a given grade, speed integration. |
+| `src/domain/route.ts` | `Route` (`fromPoints`, distance/ascent, `cursor()`), `RouteCursor` (smoothed grade lookup). |
+| `src/domain/workout.ts` | `Workout` (validation, `targetAt(t)`), `Power` and `Duration` value objects. |
 | `src/domain/activity.ts` | `Recorder`: samples, laps, timer pauses → `FinishedActivity`. |
 | `src/domain/config.ts`, `trainer-data.ts`, `math.ts` | Config type + defaults, trainer data/feature types, `clamp`. |
-| `src/application/ports.ts` | `Trainer`, `Clock`, `ActivityStore`, `ActivityUploader` interfaces. |
-| `src/application/session.ts` | Session engine: tick loop, pause/auto-pause, power averages, BLE write throttling; delegates the rest to the `RideMode`. |
-| `src/application/ride.ts` | `saveRide` (close recording → store), `uploadRide`. |
+| `src/application/ports.ts` | `Trainer`, `Clock`, `ActivityStore`, `ActivityUploader`, `RouteSource`, `WorkoutSource`, `ConfigStore`. |
+| `src/application/session.ts` | `Session`: tick loop, pause state, recording, snapshots; delegates to the `RideMode`. |
+| `src/application/auto-pause.ts`, `power-stats.ts`, `trainer-commander.ts` | Session collaborators: no-pedalling detection, 3 s/average power, throttled ERG/grade writes. |
+| `src/application/ride.ts` | `RideFinisher`: close recording → store, upload. |
 | `src/infrastructure/ftms/codec.ts` | Encode Control Point commands, decode Indoor Bike Data / responses / feature bits. Pure functions. |
-| `src/infrastructure/trainer/ble.ts` | noble-backed discovery + GATT; subscribes to 0x2AD2, indicates on 0x2AD9, requests control. |
+| `src/infrastructure/trainer/ble.ts` | `BleScanner` (lazy noble, scan/find) and `BleFtmsTrainer` (GATT, 0x2AD2 notify, 0x2AD9 control). |
 | `src/infrastructure/trainer/mock.ts` | Physics-based fake trainer driven by the clock (responds to ERG / sim commands, plausible cadence). |
 | `src/infrastructure/clock.ts` | `RealClock`, `SimClock(speedup)`. |
-| `src/infrastructure/route/*.ts`, `workout/*.ts` | GPX / FIT course and YAML / ZWO workout parsers + file loaders. |
-| `src/infrastructure/fit-encoder.ts`, `activity-store.ts` | `FinishedActivity` → FIT bytes; `FitFileStore` writes `~/.trainer-cli/activities/*.fit`. |
-| `src/infrastructure/strava.ts` | OAuth (loopback redirect), token store, upload + poll; `StravaUploader`. |
-| `src/infrastructure/config-file.ts` | `~/.trainer-cli` paths, config YAML load/save. |
+| `src/infrastructure/route/*.ts`, `workout/*.ts` | `RouteLoader` / `WorkoutLoader` pick a `GpxRouteParser`, `FitRouteParser`, `YamlWorkoutParser` or `ZwoWorkoutParser` by extension. |
+| `src/infrastructure/fit-encoder.ts`, `activity-store.ts` | `FitEncoder`: `FinishedActivity` → FIT bytes; `FitFileStore` writes `~/.trainer-cli/activities/*.fit`. |
+| `src/infrastructure/strava.ts` | `StravaClient` (OAuth loopback, token refresh, upload + poll), `StravaTokenFile`. |
+| `src/infrastructure/config-file.ts` | `ConfigFile`: `~/.trainer-cli` paths, config YAML load/save. |
+| `src/presentation/ride-runner.ts` | `RideRunner`: connect → ride (TUI or log lines) → save → upload prompt. |
 | `src/presentation/ui/*.tsx` | Ink components: header, big numbers, grade/elevation sparkline, workout bar. |
 | `src/presentation/cli.ts` | Commands + composition root. |
 
@@ -216,7 +225,7 @@ trainerName: D100      # auto-connect filter; omit to pick from scan
 ## Testing strategy
 
 - Pure units: FTMS codec (byte-exact fixtures), physics, parsers, workout resolver.
-- Ride modes against a fake `RideContext` (no timers, no trainer).
+- Ride modes against a fake `RideContext`; `TrainerCommander`, `AutoPause`, `PowerStats`, loaders (no timers, no trainer).
 - Architecture: layer dependency rule over `src/**` imports.
 - Full ride headless: `trainer ride route.gpx --mock --speedup 60 --no-tui`
   produces a FIT; decode it back with the FIT SDK and assert record count/laps.
