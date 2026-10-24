@@ -20,45 +20,82 @@ Non-goals: 3D world, multiplayer, power-curve analytics (Strava/intervals.icu do
 
 ## Architecture
 
+Light **onion architecture**: four layers, dependencies point inwards only.
+
 ```
-            ┌──────────────── CLI (commander) ────────────────┐
-            │ scan · ride · workout · free · strava auth/upload│
-            └───────────────┬─────────────────────────────────┘
-                            │
-                  ┌─────────▼─────────┐   1 Hz tick   ┌──────────────┐
-                  │   Session engine  │──────────────▶│  Ink TUI     │
-                  │ (mode strategy)   │   snapshots   │  dashboard   │
-                  └──┬─────────┬──────┘               └──────────────┘
-          targets    │         │ samples
-     ┌───────────────▼──┐   ┌──▼──────────────┐
-     │ Trainer (iface)  │   │ Recorder → FIT  │──▶ ~/.trainer-cli/activities/*.fit
-     │ ├ BleFtmsTrainer │   └─────────────────┘            │
-     │ └ MockTrainer    │                                   ▼
-     └──────┬───────────┘                           Strava uploader
-            │ FTMS codec (pure, unit-tested)        (OAuth, token refresh)
-            ▼
-       @abandonware/noble (optional native dep)
+  ┌─────────────────────────────── presentation ───────────────────────────────┐
+  │  cli.ts (commander, composition root) · RideRunner · ui/RideView.tsx (Ink) │
+  │  ┌──────────────────────────── infrastructure ───────────────────────────┐  │
+  │  │ BleScanner · BleFtmsTrainer · MockTrainer · FTMS codec · Real/SimClock│  │
+  │  │ Route/WorkoutLoader + parsers · FitEncoder · FitFileStore             │  │
+  │  │ StravaClient · ConfigFile                                             │  │
+  │  │  ┌───────────────────────── application ──────────────────────────┐   │  │
+  │  │  │ Session (1 Hz tick) + AutoPause · PowerStats · TrainerCommander│   │  │
+  │  │  │ RideFinisher · ports: Trainer · Clock · ActivityStore ·        │   │  │
+  │  │  │ ActivityUploader · RouteSource · WorkoutSource · ConfigStore   │   │  │
+  │  │  │  ┌────────────────────────── domain ────────────────────────┐  │   │  │
+  │  │  │  │ RideMode strategies (route · workout · free) · RiderModel │  │   │  │
+  │  │  │  │ Route + RouteCursor · Workout · Power · Duration · Recorder│  │   │  │
+  │  │  │  │ Config · TrainerData                                      │  │   │  │
+  │  │  │  └───────────────────────────────────────────────────────────┘  │   │  │
+  │  │  └─────────────────────────────────────────────────────────────────┘   │  │
+  │  └─────────────────────────────────────────────────────────────────────────┘  │
+  └────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Key principle: **everything above the `Trainer` interface is pure TypeScript with
-no BLE dependency**, so the whole app runs and is testable with `--mock`.
+Rules (enforced by `test/architecture.test.ts`):
+
+- **domain** imports only domain, and no packages at all: pure TypeScript, no I/O.
+- **application** imports domain + its own ports (only `node:events` from outside).
+- **infrastructure** implements the ports and may use any package; it never imports presentation.
+- **presentation** creates the concrete adapters (`cli.ts` for long-lived ones, `RideRunner` for
+  per-ride ones) and renders the UI.
+
+Style: object-oriented. Behaviour lives on the object that owns the data (`workout.targetAt`,
+`route.cursor()`, `model.stepSpeed`, `Power.parse`), file formats and services sit behind
+interfaces, and `Session` composes small collaborators. Deliberately left as plain functions:
+the FTMS codec (stateless byte transforms) and the Ink UI (function components + hooks).
+
+Everything above the `Trainer` port is BLE-free, so the whole app runs and is testable with
+`--mock`. The mock runs on a `SimClock` (speedable), the BLE trainer on a `RealClock`, and the
+session doesn't know which one it has.
+
+Adding things usually means one new file in one layer:
+
+| Want | Add |
+|------|-----|
+| new ride mode | a `RideMode` in `domain/modes/` + a command in `cli.ts` |
+| new workout/course format | a `WorkoutParser` / `RouteParser` class + one entry in its loader's parser list |
+| new device (HR strap, ANT+) | an adapter in `infrastructure/` behind a port |
+| new upload target | an `ActivityUploader` in `infrastructure/` |
 
 ### Modules
 
 | Path | Responsibility |
 |------|----------------|
-| `src/ftms/codec.ts` | Encode Control Point commands, decode Indoor Bike Data / responses / feature bits. Pure functions. |
-| `src/trainer/ble.ts` | noble-backed discovery + GATT; subscribes to 0x2AD2, indicates on 0x2AD9, requests control. |
-| `src/trainer/mock.ts` | Physics-based fake trainer (responds to ERG / sim commands, plausible cadence). |
-| `src/physics.ts` | Rider+bike model: power ↔ speed on a given grade (Newton solve). |
-| `src/route/*.ts` | GPX & FIT course loaders → `Route { points[{dist, ele, lat, lon}] }`, smoothed grade lookup. |
-| `src/workout/*.ts` | YAML + ZWO parsers → flat `Step[]`; `targetAt(t)` resolver. |
-| `src/session.ts` | Session engine: tick loop, mode strategies (route / workout / free), pause, laps. |
-| `src/recorder.ts` | Per-second samples → FIT activity (file_id, events, records, laps, session, activity). |
-| `src/strava.ts` | OAuth (loopback redirect), token store, upload + poll. |
-| `src/controller/*.ts` | Handlebar remotes: Zwift Click codec (pure), BLE client, mock. Buttons → `Session.adjust(±1)`. |
-| `src/ui/*.tsx` | Ink components: header, big numbers, grade/elevation sparkline, workout bar. |
-| `src/cli.ts` | Command wiring. |
+| `src/domain/modes/*.ts` | `RideMode` strategy + `RouteMode`, `WorkoutMode`, `FreeMode`: trainer targets, motion, +/- behaviour, end condition, mode-specific snapshot. |
+| `src/domain/physics.ts` | `RiderModel`: power ↔ speed on a given grade, speed integration. |
+| `src/domain/route.ts` | `Route` (`fromPoints`, distance/ascent, `cursor()`), `RouteCursor` (smoothed grade lookup). |
+| `src/domain/workout.ts` | `Workout` (validation, `targetAt(t)`), `Power` and `Duration` value objects. |
+| `src/domain/activity.ts` | `Recorder`: samples, laps, timer pauses → `FinishedActivity`. |
+| `src/domain/config.ts`, `trainer-data.ts`, `math.ts` | Config type + defaults, trainer data/feature types, `clamp`. |
+| `src/application/ports.ts` | `Trainer`, `Controller`, `Clock`, `ActivityStore`, `ActivityUploader`, `RouteSource`, `WorkoutSource`, `ConfigStore`. |
+| `src/application/session.ts` | `Session`: tick loop, pause state, recording, snapshots; delegates to the `RideMode`. |
+| `src/application/auto-pause.ts`, `power-stats.ts`, `trainer-commander.ts` | Session collaborators: no-pedalling detection, 3 s/average power, throttled ERG/grade writes. |
+| `src/application/ride.ts` | `RideFinisher`: close recording → store, upload. |
+| `src/infrastructure/ftms/codec.ts` | Encode Control Point commands, decode Indoor Bike Data / responses / feature bits. Pure functions. |
+| `src/infrastructure/trainer/ble.ts` | `BleScanner` (lazy noble, scan/find) and `BleFtmsTrainer` (GATT, 0x2AD2 notify, 0x2AD9 control). |
+| `src/infrastructure/controller/*.ts` | Handlebar remotes: Zwift Click codec (pure), `ZwiftClick` BLE client, `MockClick`. Buttons → `Session.adjust(±1)`; `BleScanner.findClicks` discovers them. |
+| `src/infrastructure/ble-uuid.ts`, `debug-log.ts` | UUID normalisation shared by the BLE adapters; `DebugLog` (raw device traffic with `TRAINER_CLI_DEBUG=1`). |
+| `src/infrastructure/trainer/mock.ts` | Physics-based fake trainer driven by the clock (responds to ERG / sim commands, plausible cadence). |
+| `src/infrastructure/clock.ts` | `RealClock`, `SimClock(speedup)`; `SimClock.onStep` runs simulated devices before the session's tick. |
+| `src/infrastructure/format-loader.ts`, `route/*.ts`, `workout/*.ts` | `FormatLoader` base: pick a `FileFormat` by extension. `RouteLoader` (`GpxRouteParser`, `FitRouteParser`) and `WorkoutLoader` (`YamlWorkoutParser`, `ZwoWorkoutParser`) extend it. |
+| `src/infrastructure/fit-encoder.ts`, `activity-store.ts` | `FitEncoder`: `FinishedActivity` → FIT bytes; `FitFileStore` writes `~/.trainer-cli/activities/*.fit`. |
+| `src/infrastructure/strava.ts` | `StravaClient` (OAuth loopback, token refresh, upload + poll), `StravaTokenFile`. |
+| `src/infrastructure/config-file.ts` | `ConfigFile`: `~/.trainer-cli` paths, config YAML load/save. |
+| `src/presentation/ride-runner.ts` | `RideRunner`: connect → ride (TUI or log lines) → save → upload prompt. |
+| `src/presentation/ui/*.tsx` | Ink components: header, big numbers, grade/elevation sparkline, workout bar. |
+| `src/presentation/cli.ts` | Commands + composition root. |
 
 ## FTMS protocol notes
 
@@ -206,6 +243,8 @@ trainerName: D100      # auto-connect filter; omit to pick from scan
 ## Testing strategy
 
 - Pure units: FTMS codec (byte-exact fixtures), physics, parsers, workout resolver.
+- Ride modes against a fake `RideContext`; `TrainerCommander`, `AutoPause`, `PowerStats`, loaders (no timers, no trainer).
+- Architecture: layer dependency rule over `src/**` imports.
 - Full ride headless: `trainer ride route.gpx --mock --speedup 60 --no-tui`
   produces a FIT; decode it back with the FIT SDK and assert record count/laps.
 - Real hardware: `trainer scan` + `trainer free --erg 150` smoke test.

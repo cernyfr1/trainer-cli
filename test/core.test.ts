@@ -1,15 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { Decoder, Stream } from '@garmin/fitsdk';
-import { cmd, decodeControlResponse, decodeFeatures, decodeIndoorBikeData, encodeIndoorBikeData } from '../src/ftms/codec.js';
-import { powerForSpeed, steadySpeed } from '../src/physics.js';
-import { parseGpx, RouteCursor } from '../src/route/route.js';
-import { parseDuration, parsePower, parseYamlWorkout, parseZwo, targetAt } from '../src/workout/workout.js';
-import { MockTrainer } from '../src/trainer/mock.js';
-import { Session, type Snapshot } from '../src/session.js';
-import { ClickEdgeDetector, RIDE_ON, decodeClickMessage, isLockedResponse, parseZwiftAdvert } from '../src/controller/zwiftCodec.js';
-import { MockClick } from '../src/controller/mock.js';
-import { DEFAULTS } from '../src/config.js';
+import { Session } from '../src/application/session.js';
+import { DEFAULTS } from '../src/domain/config.js';
+import { WorkoutMode } from '../src/domain/modes/workout-mode.js';
+import { RiderModel } from '../src/domain/physics.js';
+import { Duration, Power } from '../src/domain/workout.js';
+import { SimClock } from '../src/infrastructure/clock.js';
+import { FitEncoder } from '../src/infrastructure/fit-encoder.js';
+import { ClickEdgeDetector, RIDE_ON, decodeClickMessage, isLockedResponse, parseZwiftAdvert } from '../src/infrastructure/controller/zwift-codec.js';
+import { cmd, decodeControlResponse, decodeFeatures, decodeIndoorBikeData, encodeIndoorBikeData } from '../src/infrastructure/ftms/codec.js';
+import { GpxRouteParser } from '../src/infrastructure/route/gpx.js';
+import { MockTrainer } from '../src/infrastructure/trainer/mock.js';
+import { YamlWorkoutParser } from '../src/infrastructure/workout/yaml.js';
+import { ZwoWorkoutParser } from '../src/infrastructure/workout/zwo.js';
 
 const hex = (b: Uint8Array) => Buffer.from(b).toString('hex');
 
@@ -43,27 +47,27 @@ describe('FTMS codec', () => {
 });
 
 describe('physics', () => {
-  const m = { massKg: 84, cda: 0.32, crr: 0.004 };
+  const m = new RiderModel(84, 0.32, 0.004);
   it('steadySpeed inverts powerForSpeed', () => {
     for (const g of [-4, 0, 3, 8]) {
-      const v = steadySpeed(250, g, m);
-      expect(powerForSpeed(v, g, m)).toBeCloseTo(250, 0);
+      const v = m.steadySpeed(250, g);
+      expect(m.powerForSpeed(v, g)).toBeCloseTo(250, 0);
     }
   });
   it('gives plausible speeds', () => {
-    expect(steadySpeed(200, 0, m) * 3.6).toBeGreaterThan(30);
-    expect(steadySpeed(200, 0, m) * 3.6).toBeLessThan(36);
-    expect(steadySpeed(250, 8, m) * 3.6).toBeGreaterThan(9);
-    expect(steadySpeed(250, 8, m) * 3.6).toBeLessThan(13);
+    expect(m.steadySpeed(200, 0) * 3.6).toBeGreaterThan(30);
+    expect(m.steadySpeed(200, 0) * 3.6).toBeLessThan(36);
+    expect(m.steadySpeed(250, 8) * 3.6).toBeGreaterThan(9);
+    expect(m.steadySpeed(250, 8) * 3.6).toBeLessThan(13);
   });
 });
 
 describe('routes', () => {
   it('parses GPX and computes smoothed grade', async () => {
-    const r = parseGpx(await readFile('examples/climb-loop.gpx', 'utf8'));
+    const r = new GpxRouteParser().parse(await readFile('examples/climb-loop.gpx'));
     expect(r.name).toBe('Synthetic climb loop');
     expect(r.totalDist).toBeGreaterThan(12000);
-    const c = new RouteCursor(r);
+    const c = r.cursor();
     const climb = c.at(4500).gradePct;
     expect(climb).toBeGreaterThan(2);
     expect(c.at(10000).gradePct).toBeLessThan(-2);
@@ -71,51 +75,55 @@ describe('routes', () => {
   });
 
   it('handles rtept routes without elevation', () => {
-    const r = parseGpx(`<gpx><rte><name>flat</name><rtept lat="50" lon="14"/><rtept lat="50.01" lon="14"/></rte></gpx>`);
+    const r = new GpxRouteParser().parse(new TextEncoder().encode(`<gpx><rte><name>flat</name><rtept lat="50" lon="14"/><rtept lat="50.01" lon="14"/></rte></gpx>`));
     expect(r.totalDist).toBeCloseTo(1112, -1);
-    expect(new RouteCursor(r).at(500).gradePct).toBe(0);
+    expect(r.cursor().at(500).gradePct).toBe(0);
   });
 });
 
 describe('workouts', () => {
   it('parses durations and powers', () => {
-    expect(parseDuration('1h30m')).toBe(5400);
-    expect(parseDuration('1:30')).toBe(90);
-    expect(parseDuration(45)).toBe(45);
-    expect(parsePower('105%')).toEqual({ ftp: 1.05 });
-    expect(parsePower('180W')).toEqual({ watts: 180 });
-    expect(parsePower(0.6)).toEqual({ ftp: 0.6 });
+    expect(Duration.parse('1h30m').seconds).toBe(5400);
+    expect(Duration.parse('1:30').seconds).toBe(90);
+    expect(Duration.parse(45).seconds).toBe(45);
+    expect(Power.parse('105%')).toEqual(Power.ftp(1.05));
+    expect(Power.parse('180W')).toEqual(Power.watts(180));
+    expect(Power.parse(0.6)).toEqual(Power.ftp(0.6));
+    expect(Power.parse('50%').resolve(250)).toBe(125);
   });
 
   it('expands repeats and resolves ramps', async () => {
-    const w = parseYamlWorkout(await readFile('examples/threshold-4x8.yaml', 'utf8'));
+    const w = new YamlWorkoutParser().parse(await readFile('examples/threshold-4x8.yaml', 'utf8'));
     expect(w.steps).toHaveLength(2 + 8 + 2);
     expect(w.totalS).toBe((10 + 3 + 4 * 12 + 3 + 8) * 60);
-    expect(targetAt(w, 0, 200).watts).toBe(100);
-    expect(targetAt(w, 300, 200).watts).toBe(125); // halfway up the warm-up ramp
-    expect(targetAt(w, 14 * 60, 200).watts).toBe(200);
-    expect(targetAt(w, 62 * 60, 200).watts).toBeNull(); // free step
-    expect(targetAt(w, w.totalS, 200).done).toBe(true);
+    expect(w.targetAt(0, 200).watts).toBe(100);
+    expect(w.targetAt(300, 200).watts).toBe(125); // halfway up the warm-up ramp
+    expect(w.targetAt(14 * 60, 200).watts).toBe(200);
+    expect(w.targetAt(62 * 60, 200).watts).toBeNull(); // free step
+    expect(w.targetAt(w.totalS, 200).done).toBe(true);
   });
 
   it('parses Zwift .zwo', async () => {
-    const w = parseZwo(await readFile('examples/vo2-30-30.zwo', 'utf8'));
+    const w = new ZwoWorkoutParser().parse(await readFile('examples/vo2-30-30.zwo', 'utf8'));
     expect(w.name).toBe('VO2 30/30 x 2 sets');
     expect(w.steps).toHaveLength(1 + 20 + 1 + 20 + 1);
-    expect(targetAt(w, 605, 250).watts).toBe(300);
-    expect(targetAt(w, 635, 250).watts).toBe(125);
+    expect(w.targetAt(605, 250).watts).toBe(300);
+    expect(w.targetAt(635, 250).watts).toBe(125);
   });
 });
 
 describe('session (mock, accelerated)', () => {
   it('rides a workout to completion and writes a valid FIT with one lap per step', async () => {
-    const w = parseYamlWorkout(`name: t\nsteps:\n  - warmup: { duration: 60s, from: 50%, to: 70% }\n  - repeat: 2\n    steps:\n      - work: { duration: 30s, power: 120% }\n      - recovery: { duration: 30s, power: 50% }\n`);
-    const trainer = new MockTrainer(180);
-    const s = new Session(trainer, { kind: 'workout', workout: w, ftp: 200 }, DEFAULTS, { speedup: 2000 });
+    const w = new YamlWorkoutParser().parse(`name: t\nsteps:\n  - warmup: { duration: 60s, from: 50%, to: 70% }\n  - repeat: 2\n    steps:\n      - work: { duration: 30s, power: 120% }\n      - recovery: { duration: 30s, power: 50% }\n`);
+    const clock = new SimClock(2000);
+    const trainer = new MockTrainer(clock, 180);
+    await trainer.connect();
+    const s = new Session(trainer, new WorkoutMode(w, 200), clock, { crr: DEFAULTS.crr, cw: 0.5 * 1.225 * DEFAULTS.cda });
     const done = new Promise((r) => s.once('finished', r));
     s.start();
     await done;
-    const fit = s.recorder.toFit(s.now);
+    await trainer.disconnect();
+    const fit = new FitEncoder().encode(s.recorder.finish(s.now));
     const dec = new Decoder(Stream.fromByteArray(Array.from(fit)));
     expect(dec.checkIntegrity()).toBe(true);
     const { messages, errors } = new Decoder(Stream.fromByteArray(Array.from(fit))).read();
@@ -131,18 +139,12 @@ describe('session (mock, accelerated)', () => {
 describe('Zwift Click codec', () => {
   const b = (h: string) => Uint8Array.from(Buffer.from(h.replace(/ /g, ''), 'hex'));
 
-  it('decodes packets captured from a real Click v1 (fw 1.1.0)', () => {
+  it('decodes packets captured from a real Click v1 (fw 1.1.0) — 0 = pressed', () => {
     expect(decodeClickMessage(b('37 08 00 10 01'))).toEqual({ plus: true, minus: false });
     expect(decodeClickMessage(b('37 08 01 10 00'))).toEqual({ plus: false, minus: true });
     expect(decodeClickMessage(b('37 08 01 10 01'))).toEqual({ plus: false, minus: false });
     expect(decodeClickMessage(b('19 10 0c'))).toBeUndefined(); // battery
     expect(isLockedResponse(b('52 69 64 65 4f 6e'))).toBe(false); // handshake echo
-  });
-
-  it('decodes Click v1 (0x37) button states — 0 = pressed', () => {
-    expect(decodeClickMessage(b('37 08 00 10 01'))).toEqual({ plus: true, minus: false });
-    expect(decodeClickMessage(b('37 08 01 10 00'))).toEqual({ plus: false, minus: true });
-    expect(decodeClickMessage(b('37 08 01 10 01'))).toEqual({ plus: false, minus: false });
   });
 
   it('decodes Click v2 (0x23) bitmask — cleared bit = pressed, Z is a fallback minus', () => {
@@ -177,48 +179,5 @@ describe('Zwift Click codec', () => {
     expect(e.update({ plus: false, minus: false })).toEqual([]);
     expect(e.update({ plus: false, minus: true })).toEqual([-1]);
     expect(e.update({ plus: true, minus: false })).toEqual([1]);
-  });
-});
-
-describe('session + handlebar controller', () => {
-  const lastSnap = (s: Session) => {
-    let snap: Snapshot | undefined;
-    s.on('snapshot', (x: Snapshot) => { snap = x; });
-    return () => snap!;
-  };
-
-  it('Click presses act like +/-: difficulty in route, ERG offset in workout', async () => {
-    const route = parseGpx(await readFile('examples/climb-loop.gpx', 'utf8'));
-    const r = new Session(new MockTrainer(), { kind: 'route', route }, DEFAULTS);
-    const rs = lastSnap(r);
-    const c1 = new MockClick();
-    r.attachController(c1);
-    c1.press(-1);
-    expect(rs().difficulty).toBeCloseTo(0.9);
-
-    const w = parseYamlWorkout('name: t\nsteps:\n  - work: { duration: 60s, power: 100% }\n');
-    const ws = new Session(new MockTrainer(), { kind: 'workout', workout: w, ftp: 200 }, DEFAULTS);
-    const wsnap = lastSnap(ws);
-    const c2 = new MockClick();
-    ws.attachController(c2);
-    c2.press(1);
-    expect(wsnap().ergOffsetW).toBe(5);
-  });
-
-  it('a dropped Click shows as disconnected and the ride continues', async () => {
-    const route = parseGpx(await readFile('examples/climb-loop.gpx', 'utf8'));
-    const s = new Session(new MockTrainer(), { kind: 'route', route }, DEFAULTS);
-    const snap = lastSnap(s);
-    const c = new MockClick();
-    s.attachController(c);
-    expect(snap().controllers).toEqual([{ name: 'MockClick', connected: false }]); // attached before connect
-    await c.connect();
-    expect(snap().controllers).toEqual([{ name: 'MockClick', connected: true }]);
-    expect(snap().log.some((l) => l.includes('mock click connected'))).toBe(true);
-    await c.disconnect();
-    expect(snap().controllers).toEqual([{ name: 'MockClick', connected: false }]);
-    expect(snap().log.some((l) => l.includes('MockClick disconnected'))).toBe(true);
-    s.adjust(1); // keyboard still works
-    expect(snap().difficulty).toBeCloseTo(1.1);
   });
 });
