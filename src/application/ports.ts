@@ -18,6 +18,16 @@ export interface Trainer extends EventEmitter {
   setSimulation(p: SimParams): Promise<void>;
 }
 
+/**
+ * A handlebar remote (Zwift Click) whose buttons act like the +/- keys. Implementations: ZwiftClick, MockClick.
+ * Emits: 'adjust' (1 | -1), 'connected', 'disconnect', 'log' (string).
+ */
+export interface Controller extends EventEmitter {
+  readonly name: string;
+  connect(): Promise<void>;
+  disconnect(): Promise<void>;
+}
+
 /** Source of time. Real wall clock for a real trainer; simulated (and speedable) for the mock. */
 export interface Clock {
   /** Milliseconds since epoch, in clock time. */

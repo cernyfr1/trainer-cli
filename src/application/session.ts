@@ -3,7 +3,7 @@ import { Recorder } from '../domain/activity.js';
 import type { ModeSnapshot, Motion, RideContext, RideMode } from '../domain/modes/ride-mode.js';
 import type { TrainerData } from '../domain/trainer-data.js';
 import { AutoPause } from './auto-pause.js';
-import type { Clock, Trainer } from './ports.js';
+import type { Clock, Controller, Trainer } from './ports.js';
 import { PowerStats } from './power-stats.js';
 import { TrainerCommander } from './trainer-commander.js';
 
@@ -23,6 +23,7 @@ export interface Snapshot extends ModeSnapshot {
   speedKmh: number;
   distanceM: number;
   avgPowerW: number;
+  controllers: { name: string; connected: boolean }[];
   lap: number;
   log: string[];
 }
@@ -55,6 +56,7 @@ export class Session extends EventEmitter {
   private readonly ctx: RideContext;
   private logLines: string[] = [];
   private connected = true;
+  private controllers: { name: string; connected: boolean }[] = [];
 
   constructor(private trainer: Trainer, private mode: RideMode, private clock: Clock, private opts: SessionOptions) {
     super();
@@ -98,6 +100,17 @@ export class Session extends EventEmitter {
     const line = this.mode.adjust(dir);
     if (line) this.log(line);
     this.commander.invalidate(); // force the new target out on the next tick
+    this.emitSnapshot();
+  }
+
+  /** Handlebar remote (Zwift Click): its buttons act like the +/- keys. Attach before connect() so its logs show. */
+  attachController(c: Controller) {
+    const state = { name: c.name, connected: false };
+    this.controllers = [...this.controllers, state];
+    c.on('adjust', (dir: 1 | -1) => this.adjust(dir));
+    c.on('log', (l: string) => this.log(l));
+    c.on('connected', () => { state.connected = true; this.emitSnapshot(); });
+    c.on('disconnect', () => { state.connected = false; this.log(`${c.name} disconnected`); this.emitSnapshot(); });
     this.emitSnapshot();
   }
 
@@ -180,6 +193,7 @@ export class Session extends EventEmitter {
       speedKmh: this.motion.speedMs * 3.6,
       distanceM: this.motion.distanceM,
       avgPowerW: this.stats.averageW,
+      controllers: this.controllers.map((c) => ({ ...c })),
       lap: this.recorder.lapCount,
       log: this.logLines,
       ...this.mode.snapshot(this.ctx),

@@ -1,6 +1,10 @@
 import { EventEmitter } from 'node:events';
 import type { Trainer } from '../../application/ports.js';
 import type { DiscoveredTrainer, SimParams, TrainerFeatures } from '../../domain/trainer-data.js';
+import { norm } from '../ble-uuid.js';
+import { ZwiftClick } from '../controller/zwift-click.js';
+import { CLICK_LABEL, parseZwiftAdvert, type ClickKind } from '../controller/zwift-codec.js';
+import { DebugLog } from '../debug-log.js';
 import { FTMS, OpCode, cmd, decodeControlResponse, decodeFeatures, decodeIndoorBikeData } from '../ftms/codec.js';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -8,25 +12,38 @@ type Noble = any;
 type Peripheral = any;
 type Characteristic = any;
 
-const norm = (uuid: string) => uuid.replace(/-/g, '').toLowerCase().replace(/^0000(....)00001000800000805f9b34fb$/, '$1');
-
-/** Finds FTMS trainers over Bluetooth. noble is loaded lazily so the app (and --mock) works where the native module isn't built. */
+/**
+ * Finds FTMS trainers and Zwift Click remotes over Bluetooth.
+ * noble is loaded lazily so the app (and --mock) works where the native module isn't built.
+ */
 export class BleScanner {
   private noblePromise?: Promise<Noble>;
 
-  /** Scan for FTMS trainers for `seconds`. */
-  async scan(seconds = 8, onFound?: (t: DiscoveredTrainer) => void): Promise<Map<string, { info: DiscoveredTrainer; p: Peripheral }>> {
+  constructor(private debug = new DebugLog('', false)) {}
+
+  /** Scan for FTMS trainers for `seconds`; Zwift Click pucks seen meanwhile go to `onClick`. */
+  async scan(
+    seconds = 8, onFound?: (t: DiscoveredTrainer) => void, onClick?: (c: DiscoveredTrainer & { kind: ClickKind }) => void,
+  ): Promise<Map<string, { info: DiscoveredTrainer; p: Peripheral }>> {
     const noble = await this.ready();
     const found = new Map<string, { info: DiscoveredTrainer; p: Peripheral }>();
+    const clicks = new Set<string>();
     const onDiscover = (p: Peripheral) => {
+      const name: string = p.advertisement?.localName ?? '(unnamed)';
+      const kind = parseZwiftAdvert(p.advertisement?.manufacturerData);
+      if (kind && !clicks.has(p.id)) {
+        clicks.add(p.id);
+        onClick?.({ id: p.id, name: CLICK_LABEL[kind], rssi: p.rssi, kind });
+      }
       const uuids: string[] = (p.advertisement?.serviceUuids ?? []).map(norm);
       if (!uuids.includes(FTMS.service) || found.has(p.id)) return;
-      const info = { id: p.id, name: p.advertisement?.localName ?? '(unnamed)', rssi: p.rssi };
+      const info = { id: p.id, name, rssi: p.rssi };
       found.set(p.id, { info, p });
       onFound?.(info);
     };
     noble.on('discover', onDiscover);
-    await noble.startScanningAsync([FTMS.service], false);
+    // unfiltered: Clicks don't reliably advertise their service UUID
+    await noble.startScanningAsync([], false);
     await new Promise((r) => setTimeout(r, seconds * 1000));
     await noble.stopScanningAsync();
     noble.removeListener('discover', onDiscover);
@@ -52,6 +69,41 @@ export class BleScanner {
       };
       noble.on('discover', onDiscover);
       noble.startScanningAsync([FTMS.service], false).catch(reject);
+    });
+  }
+
+  /**
+   * Scan for Zwift Click pucks (v1, or the v2 left/right pair) and hand each one to `onFound`.
+   * Unfiltered scan: Clicks don't reliably advertise their custom service, so match on manufacturer data.
+   * Stops after `timeoutS`, once a v1 or both v2 sides have been found, or when `signal` aborts.
+   */
+  async findClicks(
+    filter: string | undefined, timeoutS: number, onFound: (c: ZwiftClick) => void, signal?: AbortSignal,
+  ): Promise<void> {
+    const noble = await this.ready();
+    if (signal?.aborted) return;
+    const seen = new Set<ClickKind>();
+    await new Promise<void>((resolve) => {
+      const finish = async () => {
+        clearTimeout(to);
+        signal?.removeEventListener('abort', finish);
+        noble.removeListener('discover', onDiscover);
+        await noble.stopScanningAsync().catch(() => undefined);
+        resolve();
+      };
+      const to = setTimeout(finish, timeoutS * 1000);
+      signal?.addEventListener('abort', finish, { once: true });
+      const onDiscover = (p: Peripheral) => {
+        const kind = parseZwiftAdvert(p.advertisement?.manufacturerData);
+        if (signal?.aborted || !kind || seen.has(kind)) return;
+        const name: string = p.advertisement?.localName ?? '';
+        if (filter && !name.toLowerCase().includes(filter.toLowerCase())) return;
+        seen.add(kind);
+        onFound(new ZwiftClick(p, kind, this.debug));
+        if (seen.has('click-v1') || (seen.has('click-v2-left') && seen.has('click-v2-right'))) void finish();
+      };
+      noble.on('discover', onDiscover);
+      noble.startScanningAsync([], false).catch(() => void finish());
     });
   }
 

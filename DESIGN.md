@@ -79,12 +79,14 @@ Adding things usually means one new file in one layer:
 | `src/domain/workout.ts` | `Workout` (validation, `targetAt(t)`), `Power` and `Duration` value objects. |
 | `src/domain/activity.ts` | `Recorder`: samples, laps, timer pauses → `FinishedActivity`. |
 | `src/domain/config.ts`, `trainer-data.ts`, `math.ts` | Config type + defaults, trainer data/feature types, `clamp`. |
-| `src/application/ports.ts` | `Trainer`, `Clock`, `ActivityStore`, `ActivityUploader`, `RouteSource`, `WorkoutSource`, `ConfigStore`. |
+| `src/application/ports.ts` | `Trainer`, `Controller`, `Clock`, `ActivityStore`, `ActivityUploader`, `RouteSource`, `WorkoutSource`, `ConfigStore`. |
 | `src/application/session.ts` | `Session`: tick loop, pause state, recording, snapshots; delegates to the `RideMode`. |
 | `src/application/auto-pause.ts`, `power-stats.ts`, `trainer-commander.ts` | Session collaborators: no-pedalling detection, 3 s/average power, throttled ERG/grade writes. |
 | `src/application/ride.ts` | `RideFinisher`: close recording → store, upload. |
 | `src/infrastructure/ftms/codec.ts` | Encode Control Point commands, decode Indoor Bike Data / responses / feature bits. Pure functions. |
 | `src/infrastructure/trainer/ble.ts` | `BleScanner` (lazy noble, scan/find) and `BleFtmsTrainer` (GATT, 0x2AD2 notify, 0x2AD9 control). |
+| `src/infrastructure/controller/*.ts` | Handlebar remotes: Zwift Click codec (pure), `ZwiftClick` BLE client, `MockClick`. Buttons → `Session.adjust(±1)`; `BleScanner.findClicks` discovers them. |
+| `src/infrastructure/ble-uuid.ts`, `debug-log.ts` | UUID normalisation shared by the BLE adapters; `DebugLog` (raw device traffic with `TRAINER_CLI_DEBUG=1`). |
 | `src/infrastructure/trainer/mock.ts` | Physics-based fake trainer driven by the clock (responds to ERG / sim commands, plausible cadence). |
 | `src/infrastructure/clock.ts` | `RealClock`, `SimClock(speedup)`; `SimClock.onStep` runs simulated devices before the session's tick. |
 | `src/infrastructure/format-loader.ts`, `route/*.ts`, `workout/*.ts` | `FormatLoader` base: pick a `FileFormat` by extension. `RouteLoader` (`GpxRouteParser`, `FitRouteParser`) and `WorkoutLoader` (`YamlWorkoutParser`, `ZwoWorkoutParser`) extend it. |
@@ -134,6 +136,22 @@ HR, MET, elapsed, remaining.
   (default −10 … +15 %, configurable) and sends a `difficulty` scale factor
   (default 100 %) the user can turn down from the TUI.
 - Spin-down calibration isn't exposed via FTMS on this unit; use the Decathlon app.
+
+## Zwift Click protocol notes
+
+Reverse-engineered (see the BikeControl project); no official spec.
+
+- Identified by manufacturer data: company `0x094A`, then device type `0x09` (Click),
+  `0x0A` / `0x0B` (Click v2 right / left). Scan is unfiltered — the custom service
+  isn't reliably advertised.
+- Service `00000001-19CA-4651-86E5-FA29DCDD09D1` (or `0xFC82` on newer firmware):
+  `…0002` Async (notify, buttons), `…0003` SyncRx (write), `…0004` SyncTx (indicate).
+- Handshake: write ASCII `RideOn` to SyncRx — no encryption on the Click. A locked v2
+  puck replies `0xFF …` instead of echoing it.
+- Button messages: type byte + protobuf. `0x37` (v1): field 1 plus, field 2 minus,
+  0 = pressed. `0x23` (v2): field 1 bitmask, cleared bit = pressed; `0x1000` → +,
+  `0x0100` or `0x0080` (Z, right-puck fallback) → −. State repeats, so only
+  released → pressed edges count.
 
 ## Ride simulation (route mode)
 

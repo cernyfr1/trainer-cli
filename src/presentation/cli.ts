@@ -7,6 +7,7 @@ import { FreeMode } from '../domain/modes/free-mode.js';
 import { RouteMode } from '../domain/modes/route-mode.js';
 import { WorkoutMode } from '../domain/modes/workout-mode.js';
 import { ConfigFile } from '../infrastructure/config-file.js';
+import { DebugLog } from '../infrastructure/debug-log.js';
 import { RouteLoader } from '../infrastructure/route/loader.js';
 import { StravaClient, StravaTokenFile } from '../infrastructure/strava.js';
 import { BleScanner } from '../infrastructure/trainer/ble.js';
@@ -17,7 +18,7 @@ import { fmtTime } from './ui/RideView.js';
 // composition root: long-lived adapters; RideRunner creates the per-ride ones (clock, trainer, store)
 const config = new ConfigFile();
 const strava = new StravaClient(StravaTokenFile.in(config.appDir));
-const scanner = new BleScanner();
+const scanner = new BleScanner(new DebugLog(config.appDir, !!process.env.TRAINER_CLI_DEBUG));
 const runner = new RideRunner(config, strava, scanner);
 
 const program = new Command()
@@ -33,15 +34,18 @@ const rideOptions = (c: Command) => c
   .option('--upload', 'upload to Strava when finished without asking')
   .option('--no-upload', 'never upload')
   .option('--name <name>', 'activity name for Strava')
-  .option('--difficulty <pct>', 'route mode: scale grade, e.g. 70');
+  .option('--difficulty <pct>', 'route mode: scale grade, e.g. 70')
+  .option('--no-click', "don't look for a Zwift Click handlebar remote");
 
 program.command('scan')
-  .description('list nearby FTMS trainers')
+  .description('list nearby FTMS trainers and Zwift Clicks')
   .option('-s, --seconds <n>', 'scan duration', '8')
   .action(async (o) => {
-    console.log(`Scanning ${o.seconds}s for FTMS trainers… (pedal to wake it up)`);
-    const found = await scanner.scan(Number(o.seconds), (t) => console.log(`  ${t.name.padEnd(24)} rssi ${t.rssi}  id ${t.id}`));
-    if (!found.size) console.log('Nothing found. Is the trainer awake and not connected to another app?');
+    console.log(`Scanning ${o.seconds}s for FTMS trainers and Zwift Clicks… (pedal to wake it up)`);
+    const show = (t: { name: string; rssi: number; id: string }) => console.log(`  ${t.name.padEnd(24)} rssi ${t.rssi}  id ${t.id}`);
+    let clicks = 0;
+    const found = await scanner.scan(Number(o.seconds), show, (c) => { clicks++; show(c); });
+    if (!found.size) console.log(`${clicks ? 'No FTMS trainer found' : 'Nothing found'}. Is the trainer awake and not connected to another app?`);
     else console.log(`\nUse: trainer ride <file> --trainer "${[...found.values()][0].info.name}"   (or set trainerName in config)`);
     process.exit(0);
   });
@@ -114,7 +118,7 @@ program.command('config [assignments...]')
     for (const a of assignments) {
       const [k, ...rest] = a.split('=');
       const v = rest.join('=');
-      if (!(k in DEFAULTS) && !['trainerName', 'stravaClientId', 'stravaClientSecret'].includes(k)) throw new Error(`Unknown key "${k}"`);
+      if (!(k in DEFAULTS) && !['trainerName', 'clickName', 'stravaClientId', 'stravaClientSecret'].includes(k)) throw new Error(`Unknown key "${k}"`);
       patch[k] = typeof (DEFAULTS as any)[k] === 'number' ? Number(v) : v;
     }
     await config.save(patch as Partial<Config>);

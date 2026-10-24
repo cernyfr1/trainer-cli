@@ -57,18 +57,18 @@ argument parsing, and it is also the **composition root**: the one place where c
 classes get chosen.
 
 - **Long-lived adapters** are created once at the top
-  ([cli.ts:17-21](src/presentation/cli.ts#L17-L21)): `ConfigFile`, `StravaClient`,
+  ([cli.ts:18-22](src/presentation/cli.ts#L18-L22)): `ConfigFile`, `StravaClient`,
   `BleScanner` and the `RideRunner` that receives them. Per-ride objects (the clock, the
   trainer, the activity store) are created later by `RideRunner`, because which ones you
   need depends on the flags.
 - **Shared ride flags** (`--mock`, `--trainer`, `--speedup`, `--no-tui`, `--upload`, …) are
   added to every ride command by `rideOptions`
-  ([cli.ts:28-36](src/presentation/cli.ts#L28-L36)).
+  ([cli.ts:29-38](src/presentation/cli.ts#L29-L38)).
 - **Ride commands** (`ride`, `workout`, `free`) all follow the same shape. They load their
   input, print a one-line summary, then call `runner.run(modeFactory, opts)`:
 
   ```ts
-  // cli.ts:52-57
+  // cli.ts:55-60
   const route = await new RouteLoader().load(file);
   await runner.run((cfg, model, columns) => new RouteMode(route, {
     model, minGrade: cfg.minGrade, maxGrade: cfg.maxGrade, difficulty: cfg.difficulty, profileColumns: columns - 10,
@@ -78,12 +78,12 @@ classes get chosen.
   **Why a factory, not a ready-made mode?** The mode needs the loaded config, the
   `RiderModel` and the terminal width. The command doesn't have those yet; the runner works
   them out. The `ModeFactory` type is declared in
-  [ride-runner.ts:30](src/presentation/ride-runner.ts#L30).
+  [ride-runner.ts:31](src/presentation/ride-runner.ts#L31).
 - **Non-ride commands**: `scan`, `strava auth|status|upload`, `config` (prints the config, or
   sets values from `key=value` assignments, checked against `DEFAULTS`) and `activities`
   (lists the FIT files). They are thin wrappers around the infrastructure classes.
 - Errors from any command end up in the single `.catch` at the bottom
-  ([cli.ts:133-136](src/presentation/cli.ts#L133-L136)), which prints `✖ message` and
+  ([cli.ts:137-140](src/presentation/cli.ts#L137-L140)), which prints `✖ message` and
   exits with code 1.
 
 ---
@@ -91,26 +91,29 @@ classes get chosen.
 ## 2. One ride, end to end — `RideRunner`
 
 [src/presentation/ride-runner.ts](src/presentation/ride-runner.ts) orchestrates a single
-ride. `run()` ([ride-runner.ts:36-59](src/presentation/ride-runner.ts#L36-L59)) reads top to
+ride. `run()` ([ride-runner.ts:37-63](src/presentation/ride-runner.ts#L37-L63)) reads top to
 bottom like a script:
 
 1. **Load config.** `--difficulty 70` overrides `cfg.difficulty` (as a fraction, 0.7).
 2. **Pick a clock.** `--mock` gives a `SimClock(speedup)`; otherwise a `RealClock`.
 3. **Connect a trainer** (`connectTrainer`,
-   [ride-runner.ts:61-71](src/presentation/ride-runner.ts#L61-L71)). A `SimClock` means mock
+   [ride-runner.ts:65-75](src/presentation/ride-runner.ts#L65-L75)). A `SimClock` means mock
    mode, so the runner creates a `MockTrainer` driven by that clock with a base power of
    80 % of FTP. Otherwise `BleScanner.find(filter)` scans until a trainer whose name
    contains the `--trainer` value (or `trainerName` from config) shows up. Either way, it
    then calls `trainer.connect()`.
 4. **Build the engine.** `RiderModel.fromConfig(cfg)` → `makeMode(cfg, model, cols)` →
    `new Session(trainer, mode, clock, { crr, cw })`.
-5. **Ride** (`ride()`, [ride-runner.ts:74-85](src/presentation/ride-runner.ts#L74-L85)).
+   Then `connectControllers` starts a background Zwift Click scan (skipped with `--mock`
+   or `--no-click`) and attaches every Click it finds to the session. It is not awaited,
+   so the ride never waits for a Click (see [section 7](#handlebar-remotes--zwift-click)).
+5. **Ride** (`ride()`, [ride-runner.ts:96-107](src/presentation/ride-runner.ts#L96-L107)).
    With a TTY it renders the Ink `RideView`. Without one, or with `--no-tui`, it attaches
    `logSnapshots` (one line per 10 s of ride time) and maps Ctrl-C to `session.stop()`.
    Then it calls `session.start()` and awaits the session's `finished` event.
-6. **Tear down & save.** It disconnects the trainer, then
+6. **Tear down & save.** It stops the Click scan, disconnects any Clicks and the trainer, then
    `RideFinisher.save(session)` writes the FIT file and prints the summary.
-7. **Upload** (`maybeUpload`, [ride-runner.ts:101-115](src/presentation/ride-runner.ts#L101-L115)).
+7. **Upload** (`maybeUpload`, [ride-runner.ts:123-137](src/presentation/ride-runner.ts#L123-L137)).
    `--upload` / `--no-upload` decide without asking; otherwise it asks "Upload to Strava?
    [Y/n]", but only on a TTY and only if Strava is connected. A failed upload never loses
    the ride: the file is already saved, and the error prints the retry command.
@@ -189,7 +192,7 @@ precomputes `totalS`. We look at `targetAt` in §6.
 no idea whether it is driving Bluetooth or a mock, whether time is real or simulated, or
 which kind of ride this is. It runs a **1 Hz loop** and delegates everything specific.
 
-### Construction ([session.ts:59-67](src/application/session.ts#L59-L67))
+### Construction ([session.ts:61-69](src/application/session.ts#L61-L69))
 
 - It creates the `Recorder` (from the domain), and the `TrainerCommander`.
 - It builds the `RideContext` once (more on this below).
@@ -199,7 +202,7 @@ which kind of ride this is. It runs a **1 Hz loop** and delegates everything spe
   - `log`: pushed into a 5-line rolling log shown in the TUI.
   - `disconnect`: sets `connected = false`, which the header shows in red.
 
-### `start()` ([session.ts:69-76](src/application/session.ts#L69-L76))
+### `start()` ([session.ts:71-78](src/application/session.ts#L71-L78))
 
 ```ts
 this.recorder.start(this.now);
@@ -211,7 +214,7 @@ this.cancelTick = this.clock.every(1, (dt) => void this.tick(dt));
 The first `control()` call happens before the first tick, so the trainer gets its
 resistance or ERG target straight away instead of a second later.
 
-### One tick, line by line ([session.ts:132-164](src/application/session.ts#L132-L164))
+### One tick, line by line ([session.ts:145-177](src/application/session.ts#L145-L177))
 
 1. **Freshness.** If no trainer data arrived in the last 3 s of clock time, power and
    cadence count as 0. This stops a dropped connection from recording a frozen 250 W
@@ -236,7 +239,7 @@ resistance or ERG target straight away instead of a second later.
 > two ticks overlap. In practice writes take tens of milliseconds, but keep this in mind
 > if you add async work to the tick.
 
-### The `RideContext` trick ([session.ts:118-130](src/application/session.ts#L118-L130))
+### The `RideContext` trick ([session.ts:131-143](src/application/session.ts#L131-L143))
 
 Modes see the session only through the
 [`RideContext`](src/domain/modes/ride-mode.ts#L5-L15) interface. The session implements it
@@ -252,7 +255,10 @@ trivially testable with a fake context (see [test/modes.test.ts](test/modes.test
   `commander.invalidate()`, so the new target goes out on the next tick even if
   throttling would normally hold it back.
 - `manualLap()` closes the current lap in the recorder.
-- `stop()` ([session.ts:78-84](src/application/session.ts#L78-L84)) cancels the tick and
+- `attachController(c)` wires a handlebar remote: its `adjust` events call `adjust(±1)`,
+  its `log` lines go to the session log, and `connected` / `disconnect` update the
+  `controllers` list in the snapshot (the TUI header shows `● Click` / `○ Click`).
+- `stop()` ([session.ts:80-86](src/application/session.ts#L80-L86)) cancels the tick and
   **freezes ride time** by storing `stoppedAt`. From then on, `session.now` returns that
   moment, so the last lap, the `finish()` timestamp and the FIT `endedAt` all agree even if
   the clock keeps moving while the app tears down. It emits `finished` exactly once.
@@ -456,16 +462,19 @@ bytes.
 ### The real trainer ([ble.ts](src/infrastructure/trainer/ble.ts))
 
 **`BleScanner`** handles discovery.
-- **Lazy noble** ([ble.ts:59-75](src/infrastructure/trainer/ble.ts#L59-L75)).
+- **Lazy noble** ([ble.ts:111-127](src/infrastructure/trainer/ble.ts#L111-L127)).
   `@abandonware/noble` is a native, *optional* dependency, loaded with a dynamic
   `import()` on first use. So `--mock`, the tests, and every non-BLE command work on
   machines where it never built. `ready()` also waits for the adapter to reach `poweredOn`.
-- `scan()` collects every peripheral advertising service `0x1826` for N seconds.
+- `scan()` collects every peripheral advertising service `0x1826` for N seconds. The scan
+  is unfiltered, so it can also report Zwift Clicks it sees through an `onClick` callback.
 - `find(filter)` resolves with the **first** match and stops scanning.
-- `norm()` collapses 128-bit Bluetooth base UUIDs to the short form (`2ad2`), so
-  characteristics can be compared regardless of how noble reports them.
+- `findClicks(filter, timeoutS, onFound, signal?)` discovers Zwift Clicks (next subsection).
+- `norm()` ([ble-uuid.ts](src/infrastructure/ble-uuid.ts)) collapses 128-bit Bluetooth
+  base UUIDs to the short form (`2ad2`), so characteristics can be compared regardless of
+  how noble reports them. Both BLE adapters use it.
 
-**`BleFtmsTrainer.connect()`** ([ble.ts:91-125](src/infrastructure/trainer/ble.ts#L91-L125))
+**`BleFtmsTrainer.connect()`** ([ble.ts:143-177](src/infrastructure/trainer/ble.ts#L143-L177))
 runs the standard FTMS handshake:
 
 1. Connect, and set up the `disconnect` handler.
@@ -478,7 +487,7 @@ runs the standard FTMS handshake:
    arrive.
 7. Send `RequestControl` (it must come first), then `Start`.
 
-**The command queue** ([ble.ts:140-155](src/infrastructure/trainer/ble.ts#L140-L155)) is
+**The command queue** ([ble.ts:192-207](src/infrastructure/trainer/ble.ts#L192-L207)) is
 the most important piece of BLE code:
 
 ```ts
@@ -493,7 +502,7 @@ return next;
 ```
 
 Only **one write is in flight** at a time, and it is resolved by the matching indication.
-`onControlResponse` ([ble.ts:157-166](src/infrastructure/trainer/ble.ts#L157-L166))
+`onControlResponse` ([ble.ts:209-218](src/infrastructure/trainer/ble.ts#L209-L218))
 matches the reply's `requestOp` against `pending.op`. A reply that doesn't match is
 ignored. Cheap trainers silently drop a write that arrives while the previous one is
 pending, so the queue serialises them, and the 2 s timeout keeps one lost reply from
@@ -517,6 +526,33 @@ doesn't stay locked at the last ERG target.
   before being emitted, so every mock ride also exercises the real codec.
 
 It registers itself with `clock.onStep`, not `clock.every`. The next section explains why.
+
+### Handlebar remotes — Zwift Click
+
+A **`Controller`** ([ports.ts:25-29](src/application/ports.ts#L25-L29)) is a second,
+smaller port: an `EventEmitter` with `connect()` / `disconnect()` that emits `adjust`
+(`1 | -1`), `connected`, `disconnect` and `log`. The session treats a button press exactly
+like the `+`/`-` key, so ride modes know nothing about remotes.
+
+- **Discovery** (`BleScanner.findClicks`). Clicks don't reliably advertise their service,
+  so the scan is unfiltered and matches on manufacturer data (`parseZwiftAdvert`). It stops
+  after 20 s, once a Click v1 or both Click v2 pucks have been found, or when the ride ends
+  (the runner aborts it), so a late Click is never attached to a finished session.
+- **The codec** ([zwift-codec.ts](src/infrastructure/controller/zwift-codec.ts)) is pure,
+  like the FTMS codec: advert parsing, a minimal protobuf varint reader, button decoding for
+  v1 (`0x37`) and v2 (`0x23`), and `ClickEdgeDetector`. The device repeats its button state,
+  so only a released → pressed edge becomes an `adjust`.
+- **`ZwiftClick.connect()`** ([zwift-click.ts](src/infrastructure/controller/zwift-click.ts))
+  finds the Zwift service, subscribes to Async (buttons) and SyncTx (handshake reply),
+  checks the firmware version, then writes the `RideOn` handshake, trying the known
+  variants in turn. A locked Click v2 answers with `0xFF …`, which is logged as a warning instead of "ready".
+- **`MockClick`** ([mock.ts](src/infrastructure/controller/mock.ts)) has a `press(dir)` for
+  tests.
+- **Debugging.** With `TRAINER_CLI_DEBUG=1`, `DebugLog`
+  ([debug-log.ts](src/infrastructure/debug-log.ts)) appends the raw Click traffic to
+  `~/.trainer-cli/debug.log`. The composition root creates it and hands it to `BleScanner`.
+
+The protocol details are in [DESIGN.md](DESIGN.md#zwift-click-protocol-notes).
 
 ---
 
@@ -637,7 +673,7 @@ activity and writes it to `~/.trainer-cli/activities/YYYY-MM-DD-HH-MM-<slug>.fit
   108 %, green in between.
 
 The headless alternative is `RideRunner.logSnapshots`
-([ride-runner.ts:88-99](src/presentation/ride-runner.ts#L88-L99)). It listens to the same
+([ride-runner.ts:110-121](src/presentation/ride-runner.ts#L110-L121)). It listens to the same
 `snapshot` event and prints one line per 10 s bucket.
 
 ---
@@ -659,6 +695,7 @@ The headless alternative is `RideRunner.logSnapshots`
 ~/.trainer-cli/
 ├── config.yaml          # non-default settings (0600)
 ├── strava.json          # API app credentials + OAuth tokens (0600)
+├── debug.log            # raw Zwift Click traffic, only with TRAINER_CLI_DEBUG=1
 └── activities/
     └── 2026-10-20-07-30-synthetic-climb-loop.fit
 ```
@@ -671,9 +708,9 @@ The headless alternative is `RideRunner.logSnapshots`
 
 | File | What it proves |
 |------|----------------|
-| [test/core.test.ts](test/core.test.ts) | FTMS codec byte-exact, physics plausibility, GPX/route grade, workout parsing (YAML repeats/ramps, ZWO), and a **full accelerated mock workout** that writes a FIT file, decodes it with the FIT SDK and checks laps/records/sub-sport |
+| [test/core.test.ts](test/core.test.ts) | FTMS and Zwift Click codecs byte-exact, physics plausibility, GPX/route grade, workout parsing (YAML repeats/ramps, ZWO), and a **full accelerated mock workout** that writes a FIT file, decodes it with the FIT SDK and checks laps/records/sub-sport |
 | [test/modes.test.ts](test/modes.test.ts) | each `RideMode` against a fake `RideContext`: grade clamp × difficulty, moves only while recording, ERG offset, laps on step change, paused-ERG cap, free-mode limits |
-| [test/application.test.ts](test/application.test.ts) | `TrainerCommander` throttling, `AutoPause`, `PowerStats`, loader extension dispatch, `Session` timing (first target at start, time frozen at stop), `SimClock` ordering |
+| [test/application.test.ts](test/application.test.ts) | `TrainerCommander` throttling, `AutoPause`, `PowerStats`, loader extension dispatch, `Session` timing (first target at start, time frozen at stop), `SimClock` ordering, Click presses acting as `+`/`-` and Click disconnects |
 | [test/architecture.test.ts](test/architecture.test.ts) | the onion rule: scans every import under `src/`; domain may use no packages, application only `node:events` |
 
 To see a whole ride without hardware:

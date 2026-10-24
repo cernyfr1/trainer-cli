@@ -1,7 +1,7 @@
 import { createInterface } from 'node:readline/promises';
 import React from 'react';
 import { render } from 'ink';
-import type { Clock, Trainer } from '../application/ports.js';
+import type { Clock, Controller, Trainer } from '../application/ports.js';
 import { RideFinisher, type SavedRide } from '../application/ride.js';
 import { Session, type Snapshot } from '../application/session.js';
 import type { Config } from '../domain/config.js';
@@ -24,6 +24,7 @@ export interface RideOpts {
   name?: string;
   ftp?: string;
   difficulty?: string;
+  click: boolean;
 }
 
 /** Builds the ride mode once config, rider model and terminal width are known. */
@@ -46,7 +47,10 @@ export class RideRunner {
     const model = RiderModel.fromConfig(cfg);
     const session = new Session(trainer, makeMode(cfg, model, cols), clock, { crr: model.crr, cw: model.cw });
 
+    const { controllers, stopScan } = this.connectControllers(session, cfg, o);
     await this.ride(session, tui);
+    stopScan();
+    await Promise.all(controllers.map((c) => c.disconnect().catch(() => undefined)));
     await trainer.disconnect().catch(() => undefined);
 
     const finisher = new RideFinisher(new FitFileStore(this.config.activitiesDir), this.strava);
@@ -68,6 +72,24 @@ export class RideRunner {
     }
     await trainer.connect();
     return trainer;
+  }
+
+  /**
+   * Zwift Click: scan in the background so ride start isn't delayed; the ride never depends on it.
+   * Returns the (growing) list of remotes found, for disconnecting after the ride, and `stopScan`
+   * so a Click found after a short ride isn't connected to the finished session.
+   */
+  private connectControllers(session: Session, cfg: Config, o: RideOpts): { controllers: Controller[]; stopScan: () => void } {
+    const controllers: Controller[] = [];
+    const scan = new AbortController();
+    const stopScan = () => scan.abort();
+    if (o.mock || !o.click) return { controllers, stopScan };
+    this.scanner.findClicks(cfg.clickName, 20, (c) => {
+      controllers.push(c);
+      session.attachController(c);
+      c.connect().catch((e: Error) => c.emit('log', `Zwift Click: ${e.message}`));
+    }, scan.signal).catch((e: Error) => console.error(`Zwift Click scan: ${e.message}`));
+    return { controllers, stopScan };
   }
 
   /** Start the session and resolve once it has finished and the UI is torn down. */

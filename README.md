@@ -59,6 +59,27 @@ trainer ride examples/climb-loop.gpx --mock --speedup 60
 | `+` / `-` | route: difficulty ±10 % · workout: ERG offset ±5 W · free: power/grade |
 | `l` | manual lap |
 | `q` `q` | finish & save |
+| Zwift Click `+` / `−` | same as `+` / `-` (see below) |
+
+## Zwift Click
+
+A Zwift Click (v1, or the v2 pair) works as a handlebar remote for the `+`/`-` keys. It
+is picked up automatically: after the trainer connects, trainer-cli scans for ~20 s in
+the background and connects any Click it finds. The header shows `● Click`, or `○ Click`
+if it drops. Rides never wait for or depend on it.
+
+- Several Clicks nearby? `trainer config clickName=<part of its name>`.
+- Don't want it? `--no-click`. (`--mock` rides never scan.)
+- `trainer scan` lists Clicks alongside trainers.
+- **Firmware:** the Click needs firmware 1.1.0+ (update it in Zwift Companion). On 1.0.0
+  it connects but never sends button presses; the TUI warns about this.
+- Not working? Run with `TRAINER_CLI_DEBUG=1` and check `~/.trainer-cli/debug.log` for
+  the raw Click traffic.
+- **Click v2:** Zwift locks the left puck (with `−`) unless it was unlocked by riding in
+  Zwift within the last ~24 h. When it's locked you'll see a warning; use **Z** on the
+  right puck as `−` instead.
+- A Click that drops mid-ride isn't reconnected; the keyboard keeps working.
+- Zwift Play / Ride controllers aren't supported.
 
 ## Strava
 

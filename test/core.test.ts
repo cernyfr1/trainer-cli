@@ -8,6 +8,7 @@ import { RiderModel } from '../src/domain/physics.js';
 import { Duration, Power } from '../src/domain/workout.js';
 import { SimClock } from '../src/infrastructure/clock.js';
 import { FitEncoder } from '../src/infrastructure/fit-encoder.js';
+import { ClickEdgeDetector, RIDE_ON, decodeClickMessage, isLockedResponse, parseZwiftAdvert } from '../src/infrastructure/controller/zwift-codec.js';
 import { cmd, decodeControlResponse, decodeFeatures, decodeIndoorBikeData, encodeIndoorBikeData } from '../src/infrastructure/ftms/codec.js';
 import { GpxRouteParser } from '../src/infrastructure/route/gpx.js';
 import { MockTrainer } from '../src/infrastructure/trainer/mock.js';
@@ -133,4 +134,50 @@ describe('session (mock, accelerated)', () => {
     const work = messages.lapMesgs[1];
     expect(work.avgPower).toBeGreaterThan(200);
   }, 20_000);
+});
+
+describe('Zwift Click codec', () => {
+  const b = (h: string) => Uint8Array.from(Buffer.from(h.replace(/ /g, ''), 'hex'));
+
+  it('decodes packets captured from a real Click v1 (fw 1.1.0) — 0 = pressed', () => {
+    expect(decodeClickMessage(b('37 08 00 10 01'))).toEqual({ plus: true, minus: false });
+    expect(decodeClickMessage(b('37 08 01 10 00'))).toEqual({ plus: false, minus: true });
+    expect(decodeClickMessage(b('37 08 01 10 01'))).toEqual({ plus: false, minus: false });
+    expect(decodeClickMessage(b('19 10 0c'))).toBeUndefined(); // battery
+    expect(isLockedResponse(b('52 69 64 65 4f 6e'))).toBe(false); // handshake echo
+  });
+
+  it('decodes Click v2 (0x23) bitmask — cleared bit = pressed, Z is a fallback minus', () => {
+    expect(decodeClickMessage(b('23 08 ff df ff ff 0f'))).toEqual({ plus: true, minus: false });   // ~0x1000
+    expect(decodeClickMessage(b('23 08 ff fd ff ff 0f'))).toEqual({ plus: false, minus: true });   // ~0x0100
+    expect(decodeClickMessage(b('23 08 ff fe ff ff 0f'))).toEqual({ plus: false, minus: true });   // ~0x0080 (Z)
+    expect(decodeClickMessage(b('23 08 ff ff ff ff 0f'))).toEqual({ plus: false, minus: false });  // released
+  });
+
+  it('ignores other message types and garbage', () => {
+    expect(decodeClickMessage(b('15 08 01'))).toBeUndefined();
+    expect(decodeClickMessage(b('19 08 64'))).toBeUndefined();
+    expect(decodeClickMessage(b('23 08 ff'))).toBeUndefined(); // truncated varint
+    expect(decodeClickMessage(new Uint8Array())).toBeUndefined();
+  });
+
+  it('identifies Clicks from manufacturer data and detects a locked v2 puck', () => {
+    expect(parseZwiftAdvert(b('4a 09 09'))).toBe('click-v1');
+    expect(parseZwiftAdvert(b('4a 09 0a 01'))).toBe('click-v2-right');
+    expect(parseZwiftAdvert(b('4a 09 0b'))).toBe('click-v2-left');
+    expect(parseZwiftAdvert(b('4a 09 02'))).toBeUndefined(); // Zwift Play
+    expect(parseZwiftAdvert(b('4c 00 09'))).toBeUndefined(); // not Zwift
+    expect(parseZwiftAdvert(undefined)).toBeUndefined();
+    expect(isLockedResponse(b('ff 05 00 ea 05'))).toBe(true);
+    expect(isLockedResponse(RIDE_ON)).toBe(false);
+  });
+
+  it('emits one adjust per released → pressed edge', () => {
+    const e = new ClickEdgeDetector();
+    expect(e.update({ plus: true, minus: false })).toEqual([1]);
+    expect(e.update({ plus: true, minus: false })).toEqual([]); // repeated frame
+    expect(e.update({ plus: false, minus: false })).toEqual([]);
+    expect(e.update({ plus: false, minus: true })).toEqual([-1]);
+    expect(e.update({ plus: true, minus: false })).toEqual([1]);
+  });
 });

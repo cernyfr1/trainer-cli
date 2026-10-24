@@ -128,12 +128,18 @@ export function RideView({ session, onExit }: { session: Session; onExit: () => 
     : s.targetW != null ? `ERG ${s.targetW} W` : `grade ${sign(s.sentGradePct ?? 0)} %`;
 
   const line = '─'.repeat(width);
+  const clicksUp = s.controllers.filter((c) => c.connected).length;
 
   return (
     <Box flexDirection="column" width={width + 2} paddingX={1}>
       <Box justifyContent="space-between">
         <Text><Text bold color="magentaBright">trainer-cli</Text><Text dimColor> · </Text><Text bold>{s.mode.toUpperCase()}</Text> {s.title}</Text>
-        <Text>⏱ {fmtTime(s.elapsedS)}   {s.connected ? <Text color="green">● {s.trainerName}</Text> : <Text color="red">✖ {s.trainerName} disconnected</Text>}</Text>
+        <Text>⏱ {fmtTime(s.elapsedS)}   {s.connected ? <Text color="green">● {s.trainerName}</Text> : <Text color="red">✖ {s.trainerName} disconnected</Text>}
+          {s.controllers.length > 0 && (clicksUp === s.controllers.length
+            ? <Text color="green">  ● Click</Text>
+            : clicksUp > 0
+              ? <Text color="yellow">  ◐ Click {clicksUp}/{s.controllers.length}</Text>
+              : <Text dimColor>  ○ Click</Text>)}</Text>
       </Box>
       <Text dimColor>{line}</Text>
       <Box>

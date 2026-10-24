@@ -3,12 +3,15 @@ import { describe, expect, it } from 'vitest';
 import { AutoPause } from '../src/application/auto-pause.js';
 import type { Clock, Trainer } from '../src/application/ports.js';
 import { PowerStats } from '../src/application/power-stats.js';
-import { Session } from '../src/application/session.js';
+import { Session, type Snapshot } from '../src/application/session.js';
 import { TrainerCommander } from '../src/application/trainer-commander.js';
+import { RouteMode } from '../src/domain/modes/route-mode.js';
 import { WorkoutMode } from '../src/domain/modes/workout-mode.js';
+import { RiderModel } from '../src/domain/physics.js';
 import type { SimParams } from '../src/domain/trainer-data.js';
 import { Power, Workout } from '../src/domain/workout.js';
 import { SimClock } from '../src/infrastructure/clock.js';
+import { MockClick } from '../src/infrastructure/controller/mock.js';
 import { RouteLoader } from '../src/infrastructure/route/loader.js';
 import { WorkoutLoader } from '../src/infrastructure/workout/loader.js';
 
@@ -135,5 +138,52 @@ describe('SimClock', () => {
     clock.onStep(() => undefined);
     await new Promise((r) => setTimeout(r, 10));
     expect(clock.now()).toBe(0);
+  });
+});
+
+describe('Session + handlebar controller', () => {
+  const opts = { crr: 0.004, cw: 0.2 };
+  const routeSession = async () => {
+    const route = await new RouteLoader().load('examples/climb-loop.gpx');
+    const mode = new RouteMode(route, { model: new RiderModel(84, 0.32, 0.004), minGrade: -10, maxGrade: 15, difficulty: 1 });
+    return new Session(new FakeTrainer(), mode, new ManualClock(), opts);
+  };
+  const lastSnap = (s: Session) => {
+    let snap: Snapshot | undefined;
+    s.on('snapshot', (x: Snapshot) => { snap = x; });
+    return () => snap!;
+  };
+
+  it('Click presses act like +/-: difficulty in route, ERG offset in workout', async () => {
+    const r = await routeSession();
+    const rs = lastSnap(r);
+    const c1 = new MockClick();
+    r.attachController(c1);
+    c1.press(-1);
+    expect(rs().difficulty).toBeCloseTo(0.9);
+
+    const workout = new Workout({ name: 'w', steps: [{ label: 'a', kind: 'steady', durationS: 60, from: Power.watts(200), to: Power.watts(200) }] });
+    const w = new Session(new FakeTrainer(), new WorkoutMode(workout, 200), new ManualClock(), opts);
+    const ws = lastSnap(w);
+    const c2 = new MockClick();
+    w.attachController(c2);
+    c2.press(1);
+    expect(ws().ergOffsetW).toBe(5);
+  });
+
+  it('a dropped Click shows as disconnected and the ride continues', async () => {
+    const s = await routeSession();
+    const snap = lastSnap(s);
+    const c = new MockClick();
+    s.attachController(c);
+    expect(snap().controllers).toEqual([{ name: 'MockClick', connected: false }]); // attached before connect
+    await c.connect();
+    expect(snap().controllers).toEqual([{ name: 'MockClick', connected: true }]);
+    expect(snap().log.some((l) => l.includes('mock click connected'))).toBe(true);
+    await c.disconnect();
+    expect(snap().controllers).toEqual([{ name: 'MockClick', connected: false }]);
+    expect(snap().log.some((l) => l.includes('MockClick disconnected'))).toBe(true);
+    s.adjust(1); // keyboard still works
+    expect(snap().difficulty).toBeCloseTo(1.1);
   });
 });
