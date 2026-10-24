@@ -75,22 +75,27 @@ export class BleScanner {
   /**
    * Scan for Zwift Click pucks (v1, or the v2 left/right pair) and hand each one to `onFound`.
    * Unfiltered scan: Clicks don't reliably advertise their custom service, so match on manufacturer data.
-   * Stops after `timeoutS`, or once a v1 or both v2 sides have been found.
+   * Stops after `timeoutS`, once a v1 or both v2 sides have been found, or when `signal` aborts.
    */
-  async findClicks(filter: string | undefined, timeoutS: number, onFound: (c: ZwiftClick) => void): Promise<void> {
+  async findClicks(
+    filter: string | undefined, timeoutS: number, onFound: (c: ZwiftClick) => void, signal?: AbortSignal,
+  ): Promise<void> {
     const noble = await this.ready();
+    if (signal?.aborted) return;
     const seen = new Set<ClickKind>();
     await new Promise<void>((resolve) => {
       const finish = async () => {
         clearTimeout(to);
+        signal?.removeEventListener('abort', finish);
         noble.removeListener('discover', onDiscover);
         await noble.stopScanningAsync().catch(() => undefined);
         resolve();
       };
       const to = setTimeout(finish, timeoutS * 1000);
+      signal?.addEventListener('abort', finish, { once: true });
       const onDiscover = (p: Peripheral) => {
         const kind = parseZwiftAdvert(p.advertisement?.manufacturerData);
-        if (!kind || seen.has(kind)) return;
+        if (signal?.aborted || !kind || seen.has(kind)) return;
         const name: string = p.advertisement?.localName ?? '';
         if (filter && !name.toLowerCase().includes(filter.toLowerCase())) return;
         seen.add(kind);

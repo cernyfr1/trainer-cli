@@ -83,7 +83,7 @@ classes get chosen.
   sets values from `key=value` assignments, checked against `DEFAULTS`) and `activities`
   (lists the FIT files). They are thin wrappers around the infrastructure classes.
 - Errors from any command end up in the single `.catch` at the bottom
-  ([cli.ts:136-139](src/presentation/cli.ts#L136-L139)), which prints `✖ message` and
+  ([cli.ts:137-140](src/presentation/cli.ts#L137-L140)), which prints `✖ message` and
   exits with code 1.
 
 ---
@@ -91,13 +91,13 @@ classes get chosen.
 ## 2. One ride, end to end — `RideRunner`
 
 [src/presentation/ride-runner.ts](src/presentation/ride-runner.ts) orchestrates a single
-ride. `run()` ([ride-runner.ts:37-62](src/presentation/ride-runner.ts#L37-L62)) reads top to
+ride. `run()` ([ride-runner.ts:37-63](src/presentation/ride-runner.ts#L37-L63)) reads top to
 bottom like a script:
 
 1. **Load config.** `--difficulty 70` overrides `cfg.difficulty` (as a fraction, 0.7).
 2. **Pick a clock.** `--mock` gives a `SimClock(speedup)`; otherwise a `RealClock`.
 3. **Connect a trainer** (`connectTrainer`,
-   [ride-runner.ts:64-74](src/presentation/ride-runner.ts#L64-L74)). A `SimClock` means mock
+   [ride-runner.ts:65-75](src/presentation/ride-runner.ts#L65-L75)). A `SimClock` means mock
    mode, so the runner creates a `MockTrainer` driven by that clock with a base power of
    80 % of FTP. Otherwise `BleScanner.find(filter)` scans until a trainer whose name
    contains the `--trainer` value (or `trainerName` from config) shows up. Either way, it
@@ -107,13 +107,13 @@ bottom like a script:
    Then `connectControllers` starts a background Zwift Click scan (skipped with `--mock`
    or `--no-click`) and attaches every Click it finds to the session. It is not awaited,
    so the ride never waits for a Click (see [section 7](#handlebar-remotes--zwift-click)).
-5. **Ride** (`ride()`, [ride-runner.ts:92-103](src/presentation/ride-runner.ts#L92-L103)).
+5. **Ride** (`ride()`, [ride-runner.ts:96-107](src/presentation/ride-runner.ts#L96-L107)).
    With a TTY it renders the Ink `RideView`. Without one, or with `--no-tui`, it attaches
    `logSnapshots` (one line per 10 s of ride time) and maps Ctrl-C to `session.stop()`.
    Then it calls `session.start()` and awaits the session's `finished` event.
-6. **Tear down & save.** It disconnects any Clicks and the trainer, then
+6. **Tear down & save.** It stops the Click scan, disconnects any Clicks and the trainer, then
    `RideFinisher.save(session)` writes the FIT file and prints the summary.
-7. **Upload** (`maybeUpload`, [ride-runner.ts:119-133](src/presentation/ride-runner.ts#L119-L133)).
+7. **Upload** (`maybeUpload`, [ride-runner.ts:123-137](src/presentation/ride-runner.ts#L123-L137)).
    `--upload` / `--no-upload` decide without asking; otherwise it asks "Upload to Strava?
    [Y/n]", but only on a TTY and only if Strava is connected. A failed upload never loses
    the ride: the file is already saved, and the error prints the retry command.
@@ -462,19 +462,19 @@ bytes.
 ### The real trainer ([ble.ts](src/infrastructure/trainer/ble.ts))
 
 **`BleScanner`** handles discovery.
-- **Lazy noble** ([ble.ts:106-122](src/infrastructure/trainer/ble.ts#L106-L122)).
+- **Lazy noble** ([ble.ts:111-127](src/infrastructure/trainer/ble.ts#L111-L127)).
   `@abandonware/noble` is a native, *optional* dependency, loaded with a dynamic
   `import()` on first use. So `--mock`, the tests, and every non-BLE command work on
   machines where it never built. `ready()` also waits for the adapter to reach `poweredOn`.
 - `scan()` collects every peripheral advertising service `0x1826` for N seconds. The scan
   is unfiltered, so it can also report Zwift Clicks it sees through an `onClick` callback.
 - `find(filter)` resolves with the **first** match and stops scanning.
-- `findClicks(filter, timeoutS, onFound)` discovers Zwift Clicks (next subsection).
+- `findClicks(filter, timeoutS, onFound, signal?)` discovers Zwift Clicks (next subsection).
 - `norm()` ([ble-uuid.ts](src/infrastructure/ble-uuid.ts)) collapses 128-bit Bluetooth
   base UUIDs to the short form (`2ad2`), so characteristics can be compared regardless of
   how noble reports them. Both BLE adapters use it.
 
-**`BleFtmsTrainer.connect()`** ([ble.ts:138-172](src/infrastructure/trainer/ble.ts#L138-L172))
+**`BleFtmsTrainer.connect()`** ([ble.ts:143-177](src/infrastructure/trainer/ble.ts#L143-L177))
 runs the standard FTMS handshake:
 
 1. Connect, and set up the `disconnect` handler.
@@ -487,7 +487,7 @@ runs the standard FTMS handshake:
    arrive.
 7. Send `RequestControl` (it must come first), then `Start`.
 
-**The command queue** ([ble.ts:187-202](src/infrastructure/trainer/ble.ts#L187-L202)) is
+**The command queue** ([ble.ts:192-207](src/infrastructure/trainer/ble.ts#L192-L207)) is
 the most important piece of BLE code:
 
 ```ts
@@ -502,7 +502,7 @@ return next;
 ```
 
 Only **one write is in flight** at a time, and it is resolved by the matching indication.
-`onControlResponse` ([ble.ts:204-213](src/infrastructure/trainer/ble.ts#L204-L213))
+`onControlResponse` ([ble.ts:209-218](src/infrastructure/trainer/ble.ts#L209-L218))
 matches the reply's `requestOp` against `pending.op`. A reply that doesn't match is
 ignored. Cheap trainers silently drop a write that arrives while the previous one is
 pending, so the queue serialises them, and the 2 s timeout keeps one lost reply from
@@ -536,7 +536,8 @@ like the `+`/`-` key, so ride modes know nothing about remotes.
 
 - **Discovery** (`BleScanner.findClicks`). Clicks don't reliably advertise their service,
   so the scan is unfiltered and matches on manufacturer data (`parseZwiftAdvert`). It stops
-  after 20 s, or once a Click v1 or both Click v2 pucks have been found.
+  after 20 s, once a Click v1 or both Click v2 pucks have been found, or when the ride ends
+  (the runner aborts it), so a late Click is never attached to a finished session.
 - **The codec** ([zwift-codec.ts](src/infrastructure/controller/zwift-codec.ts)) is pure,
   like the FTMS codec: advert parsing, a minimal protobuf varint reader, button decoding for
   v1 (`0x37`) and v2 (`0x23`), and `ClickEdgeDetector`. The device repeats its button state,
@@ -544,7 +545,7 @@ like the `+`/`-` key, so ride modes know nothing about remotes.
 - **`ZwiftClick.connect()`** ([zwift-click.ts](src/infrastructure/controller/zwift-click.ts))
   finds the Zwift service, subscribes to Async (buttons) and SyncTx (handshake reply),
   checks the firmware version, then writes the `RideOn` handshake, trying the known
-  variants in turn. A locked Click v2 answers with `0xFF …`, which is logged as a warning.
+  variants in turn. A locked Click v2 answers with `0xFF …`, which is logged as a warning instead of "ready".
 - **`MockClick`** ([mock.ts](src/infrastructure/controller/mock.ts)) has a `press(dir)` for
   tests.
 - **Debugging.** With `TRAINER_CLI_DEBUG=1`, `DebugLog`
@@ -672,7 +673,7 @@ activity and writes it to `~/.trainer-cli/activities/YYYY-MM-DD-HH-MM-<slug>.fit
   108 %, green in between.
 
 The headless alternative is `RideRunner.logSnapshots`
-([ride-runner.ts:106-117](src/presentation/ride-runner.ts#L106-L117)). It listens to the same
+([ride-runner.ts:110-121](src/presentation/ride-runner.ts#L110-L121)). It listens to the same
 `snapshot` event and prints one line per 10 s bucket.
 
 ---

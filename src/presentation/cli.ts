@@ -38,13 +38,14 @@ const rideOptions = (c: Command) => c
   .option('--no-click', "don't look for a Zwift Click handlebar remote");
 
 program.command('scan')
-  .description('list nearby FTMS trainers')
+  .description('list nearby FTMS trainers and Zwift Clicks')
   .option('-s, --seconds <n>', 'scan duration', '8')
   .action(async (o) => {
     console.log(`Scanning ${o.seconds}s for FTMS trainers and Zwift Clicks… (pedal to wake it up)`);
     const show = (t: { name: string; rssi: number; id: string }) => console.log(`  ${t.name.padEnd(24)} rssi ${t.rssi}  id ${t.id}`);
-    const found = await scanner.scan(Number(o.seconds), show, show);
-    if (!found.size) console.log('Nothing found. Is the trainer awake and not connected to another app?');
+    let clicks = 0;
+    const found = await scanner.scan(Number(o.seconds), show, (c) => { clicks++; show(c); });
+    if (!found.size) console.log(`${clicks ? 'No FTMS trainer found' : 'Nothing found'}. Is the trainer awake and not connected to another app?`);
     else console.log(`\nUse: trainer ride <file> --trainer "${[...found.values()][0].info.name}"   (or set trainerName in config)`);
     process.exit(0);
   });

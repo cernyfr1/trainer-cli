@@ -47,8 +47,9 @@ export class RideRunner {
     const model = RiderModel.fromConfig(cfg);
     const session = new Session(trainer, makeMode(cfg, model, cols), clock, { crr: model.crr, cw: model.cw });
 
-    const controllers = this.connectControllers(session, cfg, o);
+    const { controllers, stopScan } = this.connectControllers(session, cfg, o);
     await this.ride(session, tui);
+    stopScan();
     await Promise.all(controllers.map((c) => c.disconnect().catch(() => undefined)));
     await trainer.disconnect().catch(() => undefined);
 
@@ -75,17 +76,20 @@ export class RideRunner {
 
   /**
    * Zwift Click: scan in the background so ride start isn't delayed; the ride never depends on it.
-   * Returns the (growing) list of remotes found, for disconnecting after the ride.
+   * Returns the (growing) list of remotes found, for disconnecting after the ride, and `stopScan`
+   * so a Click found after a short ride isn't connected to the finished session.
    */
-  private connectControllers(session: Session, cfg: Config, o: RideOpts): Controller[] {
+  private connectControllers(session: Session, cfg: Config, o: RideOpts): { controllers: Controller[]; stopScan: () => void } {
     const controllers: Controller[] = [];
-    if (o.mock || !o.click) return controllers;
+    const scan = new AbortController();
+    const stopScan = () => scan.abort();
+    if (o.mock || !o.click) return { controllers, stopScan };
     this.scanner.findClicks(cfg.clickName, 20, (c) => {
       controllers.push(c);
       session.attachController(c);
       c.connect().catch((e: Error) => c.emit('log', `Zwift Click: ${e.message}`));
-    }).catch((e: Error) => console.error(`Zwift Click scan: ${e.message}`));
-    return controllers;
+    }, scan.signal).catch((e: Error) => console.error(`Zwift Click scan: ${e.message}`));
+    return { controllers, stopScan };
   }
 
   /** Start the session and resolve once it has finished and the UI is torn down. */

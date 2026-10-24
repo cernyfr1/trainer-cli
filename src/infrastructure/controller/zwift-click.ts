@@ -24,6 +24,8 @@ export class ZwiftClick extends EventEmitter implements Controller {
   private edges = new ClickEdgeDetector();
   private connected = false;
   private replied = false;     // SyncTx answered the handshake
+  private locked = false;      // ...with the "locked" challenge
+  private closed = false;      // disconnect() called, possibly while connect() was in flight
 
   constructor(private p: Peripheral, readonly kind: ClickKind, private debug: DebugLog) { super(); }
 
@@ -31,6 +33,7 @@ export class ZwiftClick extends EventEmitter implements Controller {
 
   async connect(): Promise<void> {
     await this.p.connectAsync();
+    if (this.closed) { await this.p.disconnectAsync(); return; }
     this.connected = true;
     this.p.once('disconnect', () => { this.connected = false; this.emit('disconnect'); });
 
@@ -69,7 +72,7 @@ export class ZwiftClick extends EventEmitter implements Controller {
     this.emit('connected');
     if (!(await this.handshake(syncRx, syncTx))) {
       this.emit('log', `${this.name} isn't answering the RideOn handshake — buttons won't work${old ? ' (update its firmware)' : ''}`);
-    } else {
+    } else if (!this.locked) {
       this.emit('log', `${this.name} ready`);
     }
   }
@@ -125,6 +128,7 @@ export class ZwiftClick extends EventEmitter implements Controller {
   }
 
   async disconnect(): Promise<void> {
+    this.closed = true;
     if (!this.connected) return;
     this.p.removeAllListeners('disconnect');
     this.connected = false;
@@ -133,6 +137,7 @@ export class ZwiftClick extends EventEmitter implements Controller {
 
   private onSync(bytes: Uint8Array) {
     if (isLockedResponse(bytes)) {
+      this.locked = true;
       this.emit('log', `${this.name} locked — open Zwift once to unlock (use Z on the right puck for −)`);
     }
   }
