@@ -69,8 +69,11 @@ export class ZwiftClick extends EventEmitter implements Controller {
     const old = fw !== undefined && olderThan(fw, MIN_FIRMWARE);
     if (old) this.emit('log', `${this.name} firmware ${fw} — update to ${MIN_FIRMWARE}+ in Zwift Companion`);
 
+    if (this.closed) return; // disconnect() landed during GATT setup
     this.emit('connected');
-    if (!(await this.handshake(syncRx, syncTx))) {
+    const ok = await this.handshake(syncRx, syncTx);
+    if (this.closed) return;
+    if (!ok) {
       this.emit('log', `${this.name} isn't answering the RideOn handshake — buttons won't work${old ? ' (update its firmware)' : ''}`);
     } else if (!this.locked) {
       this.emit('log', `${this.name} ready`);
@@ -109,6 +112,7 @@ export class ZwiftClick extends EventEmitter implements Controller {
       [RIDE_ON_START, true], [RIDE_ON_START, false], [RIDE_ON, true],
     ];
     for (const [attempt, [bytes, withoutResponse]] of attempts.entries()) {
+      if (this.closed) return false;
       const what = `${hex(bytes)} (attempt ${attempt + 1}, withoutResponse=${withoutResponse})`;
       try {
         await syncRx.writeAsync(Buffer.from(bytes), withoutResponse);
@@ -116,7 +120,7 @@ export class ZwiftClick extends EventEmitter implements Controller {
       } catch (e: any) {
         this.debug.write(`  handshake write failed: ${what}: ${e.message}`);
       }
-      for (let i = 0; i < 20 && !this.replied; i++) await new Promise((r) => setTimeout(r, 100));
+      for (let i = 0; i < 20 && !this.replied && !this.closed; i++) await new Promise((r) => setTimeout(r, 100));
       if (this.replied) return true;
       try {
         this.debug.write(`  no reply; syncTx read: ${hex(new Uint8Array(await syncTx.readAsync()))}`);

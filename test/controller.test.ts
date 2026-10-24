@@ -6,6 +6,7 @@ import { DebugLog } from '../src/infrastructure/debug-log.js';
 import { BleScanner } from '../src/infrastructure/trainer/ble.js';
 
 const hex = (h: string) => Buffer.from(h.replace(/ /g, ''), 'hex');
+const tick = () => new Promise((r) => setTimeout(r, 0));
 
 class FakeCharacteristic extends EventEmitter {
   readonly properties = ['notify'];
@@ -15,20 +16,26 @@ class FakeCharacteristic extends EventEmitter {
   async writeAsync() { this.onWrite?.(this); }
 }
 
-/** A Click whose SyncTx answers every handshake write with `reply`. */
+const hold = () => { let release!: () => void; const gate = new Promise<void>((r) => { release = r; }); return { gate, release }; };
+
+/** A Click whose SyncTx answers every handshake write with `reply` (no reply: a silent puck). */
 class FakePeripheral extends EventEmitter {
   readonly id = 'p1';
   readonly advertisement = { localName: 'Zwift Click', manufacturerData: hex('4a 09 09') };
   readonly syncTx = new FakeCharacteristic(ZWIFT.syncTx);
   disconnected = 0;
-  private gate = Promise.resolve();
-  constructor(private reply: Uint8Array) { super(); }
+  private connectGate = Promise.resolve();
+  private discoverGate = Promise.resolve();
+  constructor(private reply?: Uint8Array) { super(); }
   /** Hold connectAsync until the returned function is called. */
-  holdConnect() { let release!: () => void; this.gate = new Promise((r) => { release = r; }); return release; }
-  async connectAsync() { await this.gate; }
+  holdConnect() { const h = hold(); this.connectGate = h.gate; return h.release; }
+  /** Hold service discovery until the returned function is called. */
+  holdDiscover() { const h = hold(); this.discoverGate = h.gate; return h.release; }
+  async connectAsync() { await this.connectGate; }
   async disconnectAsync() { this.disconnected++; }
   async discoverAllServicesAndCharacteristicsAsync() {
-    const syncRx = new FakeCharacteristic(ZWIFT.syncRx, () => this.syncTx.emit('data', Buffer.from(this.reply), true));
+    await this.discoverGate;
+    const syncRx = new FakeCharacteristic(ZWIFT.syncRx, () => { if (this.reply) this.syncTx.emit('data', Buffer.from(this.reply), true); });
     return { services: [{ uuid: ZWIFT.rideService, characteristics: [new FakeCharacteristic(ZWIFT.async), syncRx, this.syncTx] }] };
   }
 }
@@ -70,6 +77,36 @@ describe('ZwiftClick handshake', () => {
     expect(p.disconnected).toBe(1);
     expect(connected).not.toHaveBeenCalled();
   });
+
+  it('disconnect() during GATT setup never reports connected', async () => {
+    const p = new FakePeripheral(RIDE_ON);
+    const release = p.holdDiscover();
+    const click = new ZwiftClick(p, 'click-v1', new DebugLog('', false));
+    const connected = vi.fn();
+    const logs: string[] = [];
+    click.on('connected', connected);
+    click.on('log', (l: string) => logs.push(l));
+    const connecting = click.connect();
+    await tick();
+    await click.disconnect();
+    release();
+    await connecting;
+    expect(p.disconnected).toBe(1);
+    expect(connected).not.toHaveBeenCalled();
+    expect(logs).toEqual([]);
+  });
+
+  it('disconnect() during the handshake stops the retries', async () => {
+    const p = new FakePeripheral(); // never answers
+    const click = new ZwiftClick(p, 'click-v1', new DebugLog('', false));
+    const logs: string[] = [];
+    click.on('log', (l: string) => logs.push(l));
+    click.once('connected', () => void click.disconnect());
+    const started = Date.now();
+    await click.connect();
+    expect(Date.now() - started).toBeLessThan(500); // not the ~6 s of retries
+    expect(logs.some((l) => l.includes("isn't answering"))).toBe(false);
+  });
 });
 
 class FakeNoble extends EventEmitter {
@@ -86,7 +123,6 @@ const scannerWith = (noble: FakeNoble) => {
   (scanner as unknown as { noblePromise: Promise<FakeNoble> }).noblePromise = Promise.resolve(noble);
   return scanner;
 };
-const tick = () => new Promise((r) => setTimeout(r, 0));
 
 describe('BleScanner.findClicks', () => {
   it('stops as soon as a v1 Click is found', async () => {
